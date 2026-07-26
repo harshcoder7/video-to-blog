@@ -1,35 +1,131 @@
-"""Query the knowledge graph: TF-IDF retrieval over section text, with an
-optional LLM-synthesized answer on top when ANTHROPIC_API_KEY is set, and a
-free extractive-answer fallback (no API key needed) otherwise."""
+"""Query the knowledge graph.
+
+Retrieval: semantic search via local Ollama embeddings when available
+(falls back to TF-IDF keyword search otherwise, always works, zero setup).
+
+Answering, in priority order:
+  1. Local Ollama chat model (qwen2.5:3b by default) -- real generative RAG,
+     free, fully offline, handles both video-specific and general questions.
+  2. Anthropic API, only if ANTHROPIC_API_KEY is set and Ollama isn't running.
+  3. Free extractive fallback -- pulls the actual answering sentence(s)
+     straight out of the transcript, no model needed at all.
+"""
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import re
 
+import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
+from kgwiki import llm_client
 from kgwiki.models import Graph, Node
+
+_CACHE_VERSION = 1
+
+
+def _text_hash(model: str, text: str) -> str:
+    return hashlib.sha256(f"{_CACHE_VERSION}:{model}:{text}".encode("utf-8")).hexdigest()
+
+
+class EmbeddingCache:
+    """Disk-persisted cache of section_id -> embedding, keyed by a hash of
+    (model, text) so edits to a section or a model switch auto-invalidate."""
+
+    def __init__(self, path: str):
+        self.path = path
+        self._data: dict[str, dict] = {}
+        if os.path.exists(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    self._data = json.load(f)
+            except (json.JSONDecodeError, OSError):
+                self._data = {}
+        self._dirty = False
+
+    def get(self, key: str, model: str, text: str) -> list[float] | None:
+        entry = self._data.get(key)
+        if entry and entry.get("hash") == _text_hash(model, text):
+            return entry.get("embedding")
+        return None
+
+    def set(self, key: str, model: str, text: str, embedding: list[float]) -> None:
+        self._data[key] = {"hash": _text_hash(model, text), "embedding": embedding}
+        self._dirty = True
+
+    def save(self) -> None:
+        if not self._dirty:
+            return
+        try:
+            os.makedirs(os.path.dirname(self.path), exist_ok=True)
+            with open(self.path, "w", encoding="utf-8") as f:
+                json.dump(self._data, f)
+            self._dirty = False
+        except OSError:
+            pass
 
 
 class SearchIndex:
-    def __init__(self, graph: Graph):
+    def __init__(self, graph: Graph, cache_path: str = "output/.kgwiki_cache.json"):
         self.sections: list[Node] = [n for n in graph.nodes if n.type == "section"]
+        self.videos_by_id: dict[str, Node] = {
+            n.id.split(":", 1)[1]: n for n in graph.nodes if n.type == "video"
+        }
         texts = [f"{n.label}. {n.data.get('text', '')}" for n in self.sections]
+
+        # TF-IDF: always built, it's the guaranteed-available fallback.
         if texts:
             self.vectorizer = TfidfVectorizer(
-                stop_words="english",
-                ngram_range=(1, 2),
-                min_df=1,
-                max_df=0.6,
-                sublinear_tf=True,
+                stop_words="english", ngram_range=(1, 2), min_df=1, max_df=0.6, sublinear_tf=True,
             )
             self.matrix = self.vectorizer.fit_transform(texts)
         else:
             self.vectorizer = None
             self.matrix = None
 
-    def query(self, q: str, top_k: int = 6) -> list[dict]:
+        # Embeddings: only if a local Ollama is actually reachable right now.
+        self.embeddings: np.ndarray | None = None
+        self.embeddings_ready = False
+        if self.sections and llm_client.is_available():
+            cache = EmbeddingCache(cache_path)
+            vectors = []
+            ok = True
+            for n, text in zip(self.sections, texts):
+                vec = cache.get(n.id, llm_client.EMBED_MODEL, text)
+                if vec is None:
+                    vec = llm_client.embed(text)
+                    if vec is None:
+                        ok = False
+                        break
+                    cache.set(n.id, llm_client.EMBED_MODEL, text, vec)
+                vectors.append(vec)
+            cache.save()
+            if ok and vectors:
+                self.embeddings = np.array(vectors, dtype=np.float32)
+                self.embeddings_ready = True
+
+    def _query_embedding(self, q: str, top_k: int) -> list[dict] | None:
+        if not self.embeddings_ready:
+            return None
+        qvec = llm_client.embed(q)
+        if qvec is None:
+            return None
+        qvec = np.array(qvec, dtype=np.float32).reshape(1, -1)
+        sims = cosine_similarity(qvec, self.embeddings)[0]
+        ranked = sims.argsort()[::-1]
+        results = []
+        for i in ranked[: top_k * 3]:
+            if sims[i] <= 0.35:
+                continue
+            results.append(self._to_result(self.sections[i], float(sims[i])))
+            if len(results) >= top_k:
+                break
+        return results
+
+    def _query_tfidf(self, q: str, top_k: int) -> list[dict]:
         if not self.sections or self.vectorizer is None:
             return []
         qvec = self.vectorizer.transform([q])
@@ -39,25 +135,52 @@ class SearchIndex:
         for i in ranked[: top_k * 3]:
             if sims[i] <= 0.02:
                 continue
-            n = self.sections[i]
-            results.append(
-                {
-                    "id": n.id,
-                    "heading": n.label,
-                    "video_id": n.data.get("video_id"),
-                    "video_title": n.data.get("video_title"),
-                    "excerpt": n.data.get("excerpt"),
-                    "text": n.data.get("text"),
-                    "screenshot": n.data.get("screenshot"),
-                    "start": n.data.get("start"),
-                    "end": n.data.get("end"),
-                    "timestamp_url": n.data.get("timestamp_url"),
-                    "score": round(float(sims[i]), 4),
-                }
-            )
+            results.append(self._to_result(self.sections[i], float(sims[i])))
             if len(results) >= top_k:
                 break
         return results
+
+    def _to_result(self, n: Node, score: float) -> dict:
+        return {
+            "id": n.id,
+            "heading": n.label,
+            "video_id": n.data.get("video_id"),
+            "video_title": n.data.get("video_title"),
+            "excerpt": n.data.get("excerpt"),
+            "text": n.data.get("text"),
+            "screenshot": n.data.get("screenshot"),
+            "start": n.data.get("start"),
+            "end": n.data.get("end"),
+            "timestamp_url": n.data.get("timestamp_url"),
+            "score": round(score, 4),
+        }
+
+    def query(self, q: str, top_k: int = 6) -> list[dict]:
+        embedding_results = self._query_embedding(q, top_k)
+        if embedding_results is not None:
+            return embedding_results
+        return self._query_tfidf(q, top_k)
+
+    def video_overviews(self, video_ids: list[str]) -> list[tuple[str, str]]:
+        """(title, overview_text) pairs for the given video ids, for RAG context."""
+        out = []
+        for vid in dict.fromkeys(video_ids):  # dedupe, preserve order
+            node = self.videos_by_id.get(vid)
+            if node and node.data.get("overview_text"):
+                out.append((node.label, node.data["overview_text"]))
+        return out
+
+    def all_video_overviews(self) -> list[tuple[str, str]]:
+        """Every ingested video's (title, overview_text), regardless of what
+        section-level retrieval found. Always included in RAG context so
+        whole-video meta-questions ("what is this about?") work even when
+        they share no vocabulary with any single section -- the corpus of
+        videos is small enough that this costs little and never hurts."""
+        return [
+            (n.label, n.data["overview_text"])
+            for n in self.videos_by_id.values()
+            if n.data.get("overview_text")
+        ]
 
 
 _GREETING_RE = re.compile(r"^\s*(hi|hello|hey+|yo|sup|howdy|good\s?(morning|afternoon|evening))\b", re.IGNORECASE)
@@ -69,7 +192,9 @@ _WHOAMI_RE = re.compile(r"who are you|what are you|what can you do|what do you d
 
 def chitchat_reply(query: str) -> str | None:
     """Handle small talk locally and for free -- no need to hit the search
-    index (or an LLM) just to answer "hi, how are you?"."""
+    index (or an LLM) just to answer "hi, how are you?". Only fires for pure
+    small talk; the RAG model handles everything else, including questions
+    that mix chit-chat with a real question."""
     q = query.strip()
     if not q:
         return None
@@ -113,15 +238,8 @@ _DEFINITION_RE = re.compile(r"^\s*(what|who)\s+(is|are|was|were)\s+(?:an?\s+|the
 
 
 def extractive_answer(query: str, results: list[dict], max_sentences: int = 3) -> str | None:
-    """Free, no-API-key fallback: pull the sentence(s) most relevant to the
-    query directly out of the top matching sections, verbatim.
-
-    Keyword overlap alone ties constantly on short queries (e.g. a one-word
-    "FDE" query matches every sentence that mentions FDE equally) so this
-    also weights by how highly TF-IDF ranked the source section, and -- for
-    "what is X" / "who is X" questions -- gives a boost to sentences that
-    actually look like a definition ("X is...", "X (Y)...", "X refers to...").
-    """
+    """Free, no-model fallback: pull the sentence(s) most relevant to the
+    query directly out of the top matching sections, verbatim."""
     if not results:
         return None
     keywords = _keywords(query)
@@ -158,6 +276,43 @@ def extractive_answer(query: str, results: list[dict], max_sentences: int = 3) -
     top = scored[:max_sentences]
     quote = " ".join(s[1] for s in top)
     return f'{quote}\n\n(from "{top[0][2]}" in {top[0][3]})'
+
+
+_RAG_SYSTEM_PROMPT = """You are a friendly, sharp assistant embedded in someone's personal \
+video knowledge base. You can see excerpts from the videos they've processed (transcript \
+sections and an overview of each video), provided below as context.
+
+Rules:
+- If the context answers the question, answer using it directly and naturally -- don't say \
+"according to the context". Mention the source video by title when it's useful, and feel \
+free to reference timestamps if given.
+- If the context is only partially relevant, use what's useful and say plainly what isn't covered.
+- If the question has nothing to do with the videos (general knowledge, casual conversation, \
+math, whatever), just answer it normally like a helpful assistant would -- don't force it to \
+be about the videos.
+- CRITICAL: never invent structure that isn't explicitly in the context -- no extra steps, \
+weeks, stages, numbers, or names beyond what's written there. If the context only shows some \
+of a sequence (e.g. week 1 and week 2 of a plan but not the rest), summarize only those and \
+say plainly that the rest isn't in view, rather than guessing or inventing what a "week 3" or \
+"week 4" might contain. When unsure whether something is stated in the context, leave it out.
+- Be concise: a few sentences unless the question genuinely needs more."""
+
+
+def generate_rag_answer(query: str, matches: list[dict], overviews: list[tuple[str, str]]) -> str | None:
+    if not llm_client.is_available():
+        return None
+
+    context_parts = []
+    for title, overview in overviews:
+        context_parts.append(f'[Video overview: "{title}"]\n{overview}')
+    for r in matches[:8]:
+        context_parts.append(
+            f"[{r['video_title']} — {r['heading']} ({r['start']}-{r['end']})]\n{r['text']}"
+        )
+    context = "\n\n".join(context_parts) if context_parts else "(No matching video content found for this question.)"
+
+    user_msg = f"Context:\n\n{context}\n\nQuestion: {query}"
+    return llm_client.chat(_RAG_SYSTEM_PROMPT, user_msg, temperature=0.4, max_tokens=500)
 
 
 _SYNTH_SYSTEM_PROMPT = """You answer questions about a personal video knowledge base \

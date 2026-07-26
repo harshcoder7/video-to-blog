@@ -56,6 +56,11 @@ def _load_video_folder(work_dir: str, video_id: str) -> dict | None:
 
     thumb = _find_media(work_dir, "video.webp", "video.jpg", "video.png")
 
+    intro = " ".join((override or {}).get("intro", []))
+    conclusion = " ".join((override or {}).get("conclusion", []))
+    subtitle = (override or {}).get("subtitle", "")
+    overview_text = " ".join(p for p in [subtitle, intro, conclusion] if p)
+
     return {
         "video_id": video_id,
         "title": (override or {}).get("title") or sections_data.get("video_title", "Untitled"),
@@ -64,7 +69,8 @@ def _load_video_folder(work_dir: str, video_id: str) -> dict | None:
         "thumbnail": thumb,
         "raw_sections": sections_data.get("sections", []),
         "override_sections": override_sections,
-        "subtitle": (override or {}).get("subtitle", ""),
+        "subtitle": subtitle,
+        "overview_text": overview_text,
     }
 
 
@@ -135,6 +141,7 @@ def build_graph(out_root: str = "output", top_k_entities: int = 6) -> Graph:
                     "url": info["url"],
                     "thumbnail": _media_url(work_dir, info["thumbnail"], out_root),
                     "subtitle": info["subtitle"],
+                    "overview_text": info["overview_text"],
                     "section_count": len(info["raw_sections"]),
                 },
             )

@@ -14,8 +14,15 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from kgwiki import llm_client
 from kgwiki.graph_builder import build_graph
-from kgwiki.search import SearchIndex, chitchat_reply, extractive_answer, synthesize_answer
+from kgwiki.search import (
+    SearchIndex,
+    chitchat_reply,
+    extractive_answer,
+    generate_rag_answer,
+    synthesize_answer,
+)
 
 load_dotenv()
 
@@ -89,26 +96,50 @@ def list_videos():
 
 class QueryRequest(BaseModel):
     q: str
-    top_k: int = 6
+    top_k: int = 8
     synthesize: bool = True
+
+
+@app.get("/api/llm_status")
+def llm_status():
+    return {
+        "ollama_available": llm_client.is_available(),
+        "chat_model": llm_client.CHAT_MODEL,
+        "embed_model": llm_client.EMBED_MODEL,
+        "embeddings_ready": getattr(_state["index"], "embeddings_ready", False),
+        "anthropic_key_set": bool(os.environ.get("ANTHROPIC_API_KEY")),
+    }
 
 
 @app.post("/api/query")
 def query(req: QueryRequest):
     chitchat = chitchat_reply(req.q)
     if chitchat:
-        return {"query": req.q, "answer": chitchat, "matches": []}
+        return {"query": req.q, "answer": chitchat, "matches": [], "answer_source": "chitchat"}
 
     index: SearchIndex = _state["index"]
     matches = index.query(req.q, top_k=req.top_k)
+    overviews = index.all_video_overviews()
 
-    answer = synthesize_answer(req.q, matches) if req.synthesize else None
+    answer = None
+    source = None
+    if req.synthesize:
+        answer = generate_rag_answer(req.q, matches, overviews)
+        if answer:
+            source = "ollama"
+    if not answer and req.synthesize:
+        answer = synthesize_answer(req.q, matches)
+        if answer:
+            source = "anthropic"
     if not answer:
         answer = extractive_answer(req.q, matches)
+        if answer:
+            source = "extractive"
     if not answer and not matches:
         answer = "I couldn't find anything about that in your videos yet. Try rephrasing, or ingest more videos with vidblog."
+        source = "none"
 
-    return {"query": req.q, "answer": answer, "matches": matches}
+    return {"query": req.q, "answer": answer, "matches": matches, "answer_source": source}
 
 
 def main():

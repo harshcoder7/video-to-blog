@@ -59,8 +59,8 @@ three views:
   open its detail panel on the right (full text, screenshot, timestamped
   link back to the original video).
 - **Ask** — a search box over every ingested transcript. Returns matching
-  sections with their screenshot, heading, and timestamp; also shows an
-  LLM-synthesized answer if `ANTHROPIC_API_KEY` is set.
+  sections with their screenshot, heading, and timestamp, plus a real
+  generated answer (see "Local LLM" below).
 - **Library** — a flat list of ingested videos, each expandable into its
   ordered section list.
 
@@ -68,3 +68,29 @@ It rescans `output/` (built by vidblog) at startup; hit the refresh icon in
 the sidebar after ingesting a new video instead of restarting the server.
 Topic nodes are extracted for free (TF-IDF + capitalized-phrase heuristics,
 no LLM required) so the graph works fully offline with zero API cost.
+
+### Local LLM (optional, recommended, still $0)
+
+The Ask view answers questions in this priority order:
+
+1. **Local Ollama model** (`qwen2.5:3b` for generation, `nomic-embed-text` for
+   real semantic search) if running — genuine generative answers, handles
+   paraphrased questions, whole-video summaries, and general questions too,
+   entirely offline.
+2. **Anthropic API**, only if `ANTHROPIC_API_KEY` is set and Ollama isn't running.
+3. **Free extractive fallback** — quotes the actual answering sentence(s)
+   straight out of the transcript. Always works, needs nothing installed.
+
+To get tier 1 (needs Docker Desktop + an NVIDIA GPU with drivers set up,
+tested on a 4GB RTX 3050):
+
+```
+docker compose up -d
+docker exec kgwiki-ollama ollama pull qwen2.5:3b
+docker exec kgwiki-ollama ollama pull nomic-embed-text
+```
+
+Then restart `kgwiki.server` (or hit the sidebar refresh button) so it picks
+up the running models. Check status any time at `GET /api/llm_status`.
+Override the defaults with env vars: `OLLAMA_URL`, `OLLAMA_CHAT_MODEL`,
+`OLLAMA_EMBED_MODEL`.

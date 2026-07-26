@@ -295,8 +295,18 @@ queryForm.addEventListener('submit', async (e) => {
   const data = await res.json();
 
   if (data.answer) {
+    const sourceLabel = {
+      ollama: '🧠 Local Qwen model',
+      anthropic: '☁️ Claude API',
+      extractive: '📄 Quoted from transcript',
+      chitchat: null,
+      none: null,
+    }[data.answer_source];
     queryAnswer.hidden = false;
-    queryAnswer.innerHTML = `<span class="answer-label">Answer</span>${escapeHtml(data.answer)}`;
+    queryAnswer.innerHTML = `
+      <span class="answer-label">Answer${sourceLabel ? ` <span class="answer-source">· ${sourceLabel}</span>` : ''}</span>
+      <div class="answer-text">${escapeHtml(data.answer)}</div>
+    `;
   }
 
   if (!data.matches || !data.matches.length) {
@@ -312,6 +322,30 @@ queryForm.addEventListener('submit', async (e) => {
     });
   });
 });
+
+async function loadLlmStatus() {
+  const el = document.getElementById('llm-status');
+  try {
+    const res = await fetch('/api/llm_status');
+    const s = await res.json();
+    if (s.ollama_available && s.embeddings_ready) {
+      el.className = 'llm-status ok';
+      el.innerHTML = `<span class="status-dot"></span> Local ${escapeHtml(s.chat_model)} is running -- real generative answers, fully offline`;
+    } else if (s.ollama_available) {
+      el.className = 'llm-status warn';
+      el.innerHTML = '<span class="status-dot"></span> Ollama is running but embeddings aren\'t ready yet -- hit refresh once model pulls finish';
+    } else if (s.anthropic_key_set) {
+      el.className = 'llm-status ok';
+      el.innerHTML = '<span class="status-dot"></span> Using Claude API for answers';
+    } else {
+      el.className = 'llm-status warn';
+      el.innerHTML = '<span class="status-dot"></span> No local model or API key detected -- answers will be quoted directly from the transcript';
+    }
+  } catch {
+    el.hidden = true;
+  }
+}
+loadLlmStatus();
 
 function renderResultCard(m) {
   const thumb = m.screenshot
