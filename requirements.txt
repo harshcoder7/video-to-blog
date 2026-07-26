@@ -8,3 +8,6 @@ requests
 python-dotenv
 webvtt-py
 anthropic
+fastapi
+uvicorn[standard]
+scikit-learn

@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Video Knowledge Graph</title>
+<link rel="stylesheet" href="/static/styles.css" />
+<script src="https://unpkg.com/force-graph@1"></script>
+</head>
+<body>
+
+<div id="app">
+  <nav class="sidebar">
+    <div class="sidebar-brand" title="Video Knowledge Graph">VK</div>
+    <button class="nav-icon active" data-view="graph" title="Graph">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="5" r="2.4"/><circle cx="5" cy="19" r="2.4"/><circle cx="19" cy="19" r="2.4"/>
+        <line x1="12" y1="7.3" x2="6.3" y2="17.1"/><line x1="12" y1="7.3" x2="17.7" y2="17.1"/><line x1="7.3" y1="19" x2="16.7" y2="19"/>
+      </svg>
+    </button>
+    <button class="nav-icon" data-view="query" title="Ask">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="10.5" cy="10.5" r="6.5"/><line x1="19.5" y1="19.5" x2="15.2" y2="15.2"/>
+      </svg>
+    </button>
+    <button class="nav-icon" data-view="library" title="Library">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M4 4.5c0-.5.4-.9 1-1h3.4c1 0 2 .4 2.6 1.1v14c-.6-.6-1.6-1-2.6-1H4V4.5Z"/>
+        <path d="M20 4.5c0-.5-.4-.9-1-1h-3.4c-1 0-2 .4-2.6 1.1v14c.6-.6 1.6-1 2.6-1H20V4.5Z"/>
+      </svg>
+    </button>
+    <div class="sidebar-spacer"></div>
+    <button id="refresh-btn" class="nav-icon" title="Rescan output/ for new videos">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M4 4v5h5"/><path d="M20 20v-5h-5"/>
+        <path d="M5.5 9A7 7 0 0 1 19 9.5"/><path d="M18.5 15A7 7 0 0 1 5 14.5"/>
+      </svg>
+    </button>
+  </nav>
+
+  <main class="main">
+
+    <section id="view-graph" class="view active">
+      <div class="graph-toolbar">
+        <div class="legend">
+          <span class="legend-item"><i class="dot dot-video"></i>Video</span>
+          <span class="legend-item"><i class="dot dot-section"></i>Section</span>
+          <span class="legend-item"><i class="dot dot-entity"></i>Topic</span>
+        </div>
+        <div class="graph-hint">scroll to zoom · drag to pan · drag a node to move it</div>
+      </div>
+      <div id="graph-container"></div>
+    </section>
+
+    <section id="view-query" class="view">
+      <div class="query-wrap">
+        <h1 class="query-title">Ask your video knowledge base</h1>
+        <p class="query-sub">Search across every transcript you've ingested. Answers come with the source clip's screenshot and timestamp.</p>
+        <form id="query-form" class="query-box">
+          <input id="query-input" type="text" placeholder="e.g. how much can a forward deployed engineer earn?" autocomplete="off" />
+          <button type="submit">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="10.5" cy="10.5" r="6.5"/><line x1="19.5" y1="19.5" x2="15.2" y2="15.2"/>
+            </svg>
+            Ask
+          </button>
+        </form>
+        <div id="query-answer" class="query-answer" hidden></div>
+        <div id="query-results" class="query-results"></div>
+      </div>
+    </section>
+
+    <section id="view-library" class="view">
+      <div class="library-wrap">
+        <h1 class="query-title">Library</h1>
+        <p class="query-sub">Every video that's been turned into knowledge so far.</p>
+        <div id="library-list" class="library-list"></div>
+      </div>
+    </section>
+
+  </main>
+
+  <aside id="detail-panel" class="detail-panel">
+    <button id="detail-close" class="detail-close">&times;</button>
+    <div id="detail-body" class="detail-body"></div>
+  </aside>
+
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

@@ -39,3 +39,32 @@ video ID, so rerunning against the same URL (e.g. after editing
 - `--max-screenshots N` — cap total screenshots (default 14)
 - `--section-seconds N` — target seconds of video per section (default 150)
 - `--whisper-model SIZE` — faster-whisper model size used only if the video has no captions at all
+
+## Knowledge graph explorer (kgwiki)
+
+A second app, `kgwiki`, turns everything vidblog has ingested into a browsable,
+Obsidian-style knowledge graph: every video, every section, and every
+recurring topic/keyword becomes a node, all searchable from one UI.
+
+```
+venv\Scripts\python -m kgwiki.server
+```
+
+Opens at `http://127.0.0.1:8765` (set `KGWIKI_PORT` to change it,
+`KGWIKI_NO_BROWSER=1` to stop it auto-opening a browser tab). The sidebar has
+three views:
+
+- **Graph** — a force-directed, drag/zoom/pan graph (teal = video, indigo =
+  section, amber = topic). Hover to highlight connections, click a node to
+  open its detail panel on the right (full text, screenshot, timestamped
+  link back to the original video).
+- **Ask** — a search box over every ingested transcript. Returns matching
+  sections with their screenshot, heading, and timestamp; also shows an
+  LLM-synthesized answer if `ANTHROPIC_API_KEY` is set.
+- **Library** — a flat list of ingested videos, each expandable into its
+  ordered section list.
+
+It rescans `output/` (built by vidblog) at startup; hit the refresh icon in
+the sidebar after ingesting a new video instead of restarting the server.
+Topic nodes are extracted for free (TF-IDF + capitalized-phrase heuristics,
+no LLM required) so the graph works fully offline with zero API cost.
