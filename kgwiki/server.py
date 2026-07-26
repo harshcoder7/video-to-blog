@@ -15,7 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from kgwiki.graph_builder import build_graph
-from kgwiki.search import SearchIndex, synthesize_answer
+from kgwiki.search import SearchIndex, chitchat_reply, extractive_answer, synthesize_answer
 
 load_dotenv()
 
@@ -95,9 +95,19 @@ class QueryRequest(BaseModel):
 
 @app.post("/api/query")
 def query(req: QueryRequest):
+    chitchat = chitchat_reply(req.q)
+    if chitchat:
+        return {"query": req.q, "answer": chitchat, "matches": []}
+
     index: SearchIndex = _state["index"]
     matches = index.query(req.q, top_k=req.top_k)
+
     answer = synthesize_answer(req.q, matches) if req.synthesize else None
+    if not answer:
+        answer = extractive_answer(req.q, matches)
+    if not answer and not matches:
+        answer = "I couldn't find anything about that in your videos yet. Try rephrasing, or ingest more videos with vidblog."
+
     return {"query": req.q, "answer": answer, "matches": matches}
 
 
