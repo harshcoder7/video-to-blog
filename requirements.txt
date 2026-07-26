@@ -1,0 +1,10 @@
+yt-dlp
+imageio-ffmpeg
+opencv-python-headless
+numpy
+reportlab
+pillow
+requests
+python-dotenv
+webvtt-py
+anthropic
