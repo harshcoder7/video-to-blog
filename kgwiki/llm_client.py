@@ -49,16 +49,14 @@ def embed_many(texts: list[str]) -> list[list[float] | None]:
     return [embed(t) for t in texts]
 
 
-def chat(system: str, user: str, temperature: float = 0.3, max_tokens: int = 500) -> str | None:
+def chat_messages(messages: list[dict], temperature: float = 0.3, max_tokens: int = 500) -> str | None:
+    """messages: list of {"role": "system"|"user"|"assistant", "content": str}."""
     try:
         resp = requests.post(
             f"{OLLAMA_URL}/api/chat",
             json={
                 "model": CHAT_MODEL,
-                "messages": [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user},
-                ],
+                "messages": messages,
                 "stream": False,
                 "options": {"temperature": temperature, "num_predict": max_tokens},
             },
@@ -68,3 +66,11 @@ def chat(system: str, user: str, temperature: float = 0.3, max_tokens: int = 500
         return resp.json().get("message", {}).get("content", "").strip() or None
     except requests.RequestException:
         return None
+
+
+def chat(system: str, user: str, temperature: float = 0.3, max_tokens: int = 500) -> str | None:
+    return chat_messages(
+        [{"role": "system", "content": system}, {"role": "user", "content": user}],
+        temperature=temperature,
+        max_tokens=max_tokens,
+    )

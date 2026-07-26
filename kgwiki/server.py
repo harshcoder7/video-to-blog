@@ -4,7 +4,14 @@ Run with:  python -m kgwiki.server
 """
 from __future__ import annotations
 
+import contextlib
+import io
 import os
+import re
+import threading
+import time
+import traceback
+import uuid
 import webbrowser
 from threading import Timer
 
@@ -94,10 +101,113 @@ def list_videos():
     return videos
 
 
+_YOUTUBE_URL_RE = re.compile(r"^https?://(www\.)?(youtube\.com/watch\?v=|youtu\.be/)[\w-]+", re.IGNORECASE)
+
+_ingest_lock = threading.Lock()
+_ingest_state: dict = {
+    "status": "idle",  # idle | running | done | error
+    "job_id": None,
+    "url": None,
+    "log": [],
+    "error": None,
+    "started_at": None,
+    "finished_at": None,
+}
+
+
+class _TeeWriter(io.TextIOBase):
+    """Captures the vidblog pipeline's print() progress output line by line
+    into the job log, so the UI can show it as a live-updating feed."""
+
+    def __init__(self, log: list[str]):
+        self._log = log
+        self._buf = ""
+
+    def write(self, s: str) -> int:
+        self._buf += s
+        while "\n" in self._buf:
+            line, self._buf = self._buf.split("\n", 1)
+            if line.strip():
+                self._log.append(line)
+        return len(s)
+
+    def flush(self) -> None:
+        pass
+
+
+class IngestRequest(BaseModel):
+    url: str
+
+
+def _run_ingest_job(url: str) -> None:
+    from vidblog import cli as vidblog_cli
+
+    writer = _TeeWriter(_ingest_state["log"])
+    try:
+        args = vidblog_cli.build_arg_parser().parse_args([url])
+        with contextlib.redirect_stdout(writer):
+            vidblog_cli.run(args)
+        _ingest_state["status"] = "done"
+    except Exception as exc:  # surface the real error to the UI rather than a bare 500
+        _ingest_state["status"] = "error"
+        _ingest_state["error"] = str(exc)
+        _ingest_state["log"].append(f"ERROR: {exc}")
+        _ingest_state["log"].append(traceback.format_exc())
+    finally:
+        _ingest_state["finished_at"] = time.time()
+        try:
+            _load()  # pick up the new video immediately, no manual refresh needed
+        except Exception:
+            pass  # don't let a graph-rebuild hiccup mask the ingest result
+        _ingest_lock.release()
+
+
+@app.post("/api/ingest")
+def start_ingest(req: IngestRequest):
+    url = req.url.strip()
+    if not _YOUTUBE_URL_RE.match(url):
+        raise HTTPException(status_code=400, detail="That doesn't look like a YouTube URL.")
+    if not _ingest_lock.acquire(blocking=False):
+        raise HTTPException(
+            status_code=409, detail="A video is already being processed -- check /api/ingest/status."
+        )
+
+    _ingest_state.update(
+        {
+            "status": "running",
+            "job_id": str(uuid.uuid4()),
+            "url": url,
+            "log": [f"Starting ingestion for {url}..."],
+            "error": None,
+            "started_at": time.time(),
+            "finished_at": None,
+        }
+    )
+    threading.Thread(target=_run_ingest_job, args=(url,), daemon=True).start()
+    return {"job_id": _ingest_state["job_id"], "status": "running"}
+
+
+@app.get("/api/ingest/status")
+def ingest_status():
+    return {
+        "status": _ingest_state["status"],
+        "job_id": _ingest_state["job_id"],
+        "url": _ingest_state["url"],
+        "log": _ingest_state["log"][-300:],
+        "error": _ingest_state["error"],
+    }
+
+
+class ChatTurn(BaseModel):
+    role: str
+    content: str
+
+
 class QueryRequest(BaseModel):
     q: str
     top_k: int = 8
     synthesize: bool = True
+    history: list[ChatTurn] = []
 
 
 @app.get("/api/llm_status")
@@ -121,10 +231,12 @@ def query(req: QueryRequest):
     matches = index.query(req.q, top_k=req.top_k)
     overviews = index.all_video_overviews()
 
+    history = [{"role": t.role, "content": t.content} for t in req.history]
+
     answer = None
     source = None
     if req.synthesize:
-        answer = generate_rag_answer(req.q, matches, overviews)
+        answer = generate_rag_answer(req.q, matches, overviews, history=history)
         if answer:
             source = "ollama"
     if not answer and req.synthesize:
@@ -145,12 +257,13 @@ def query(req: QueryRequest):
 def main():
     import uvicorn
 
+    host = os.environ.get("KGWIKI_HOST", "127.0.0.1")
     port = int(os.environ.get("KGWIKI_PORT", "8765"))
     url = f"http://127.0.0.1:{port}"
     if os.environ.get("KGWIKI_NO_BROWSER") != "1":
         Timer(1.0, lambda: webbrowser.open(url)).start()
     print(f"Video Knowledge Graph running at {url}")
-    uvicorn.run("kgwiki.server:app", host="127.0.0.1", port=port, reload=False)
+    uvicorn.run("kgwiki.server:app", host=host, port=port, reload=False)
 
 
 if __name__ == "__main__":

@@ -8,7 +8,15 @@ const state = {
   highlightLinks: new Set(),
   hoverNode: null,
   Graph: null,
+  searchMatchNodes: new Set(),
+  searchActive: false,
 };
+
+function isNodeDimmed(node) {
+  if (state.highlightNodes.size > 0 && !state.highlightNodes.has(node)) return true;
+  if (state.searchActive && !state.searchMatchNodes.has(node)) return true;
+  return false;
+}
 
 function escapeHtml(str) {
   const div = document.createElement('div');
@@ -106,7 +114,7 @@ function renderGraph(data) {
       .linkDirectionalParticles((link) => (state.highlightLinks.has(link) ? 3 : 0))
       .nodeCanvasObject((node, ctx, globalScale) => {
         const r = nodeRadius(node);
-        const dim = state.highlightNodes.size > 0 && !state.highlightNodes.has(node);
+        const dim = isNodeDimmed(node);
         ctx.globalAlpha = dim ? 0.15 : 1;
 
         ctx.beginPath();
@@ -170,6 +178,21 @@ function renderGraph(data) {
   state.Graph.graphData({ nodes: data.nodes, links: data.edges });
   resizeGraph();
 }
+
+const graphSearchInput = document.getElementById('graph-search');
+graphSearchInput.addEventListener('input', () => {
+  const q = graphSearchInput.value.trim().toLowerCase();
+  state.searchMatchNodes.clear();
+  if (!q) {
+    state.searchActive = false;
+  } else {
+    state.searchActive = true;
+    state.nodesById.forEach((node) => {
+      if (node.label.toLowerCase().includes(q)) state.searchMatchNodes.add(node);
+    });
+  }
+  refreshHighlight();
+});
 
 /* ---------------- Detail panel ---------------- */
 
@@ -272,55 +295,126 @@ function locateInGraph(node) {
   openDetail(node);
 }
 
-/* ---------------- Query view ---------------- */
+/* ---------------- Query view: multi-turn chat ---------------- */
 
 const queryForm = document.getElementById('query-form');
 const queryInput = document.getElementById('query-input');
-const queryAnswer = document.getElementById('query-answer');
-const queryResults = document.getElementById('query-results');
+const chatThread = document.getElementById('chat-thread');
+const clearChatBtn = document.getElementById('clear-chat-btn');
+
+state.chatHistory = []; // [{role, content}, ...] sent to the API for conversational memory
+
+const SOURCE_LABELS = {
+  ollama: '🧠 Local Qwen model',
+  anthropic: '☁️ Claude API',
+  extractive: '📄 Quoted from transcript',
+  chitchat: null,
+  none: null,
+};
+
+function fetchWithTimeout(url, opts, ms) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ms);
+  return fetch(url, { ...opts, signal: controller.signal }).finally(() => clearTimeout(timer));
+}
 
 queryForm.addEventListener('submit', async (e) => {
   e.preventDefault();
   const q = queryInput.value.trim();
   if (!q) return;
+  queryInput.value = '';
 
-  queryResults.innerHTML = '<div class="empty-state">Searching…</div>';
-  queryAnswer.hidden = true;
+  const turn = document.createElement('div');
+  turn.className = 'chat-turn';
+  turn.innerHTML = `
+    <div class="chat-user-msg">${escapeHtml(q)}</div>
+    <div class="chat-loading"><span class="ingest-spinner"></span> Thinking...</div>
+  `;
+  chatThread.appendChild(turn);
+  clearChatBtn.hidden = false;
+  turn.scrollIntoView({ behavior: 'smooth', block: 'end' });
 
-  const res = await fetch('/api/query', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ q }),
-  });
-  const data = await res.json();
-
-  if (data.answer) {
-    const sourceLabel = {
-      ollama: '🧠 Local Qwen model',
-      anthropic: '☁️ Claude API',
-      extractive: '📄 Quoted from transcript',
-      chitchat: null,
-      none: null,
-    }[data.answer_source];
-    queryAnswer.hidden = false;
-    queryAnswer.innerHTML = `
-      <span class="answer-label">Answer${sourceLabel ? ` <span class="answer-source">· ${sourceLabel}</span>` : ''}</span>
-      <div class="answer-text">${escapeHtml(data.answer)}</div>
-    `;
-  }
-
-  if (!data.matches || !data.matches.length) {
-    queryResults.innerHTML = '<div class="empty-state">No matching sections yet. Try different wording, or ingest more videos with vidblog.</div>';
+  let data;
+  try {
+    const res = await fetchWithTimeout(
+      '/api/query',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ q, history: state.chatHistory }),
+      },
+      75000,
+    );
+    if (!res.ok) throw new Error(`Server returned ${res.status}`);
+    data = await res.json();
+  } catch (err) {
+    const isAbort = err && err.name === 'AbortError';
+    turn.querySelector('.chat-loading').outerHTML = `<div class="empty-state">${
+      isAbort
+        ? 'That took too long and timed out. The local model might be under heavy load -- try again.'
+        : "Couldn't reach the server for an answer. Is kgwiki still running?"
+    }</div>`;
     return;
   }
 
-  queryResults.innerHTML = data.matches.map(renderResultCard).join('');
-  queryResults.querySelectorAll('.result-card').forEach((card) => {
-    card.addEventListener('click', () => {
-      const node = state.nodesById.get(card.dataset.id);
-      if (node) locateInGraph(node);
+  const loadingEl = turn.querySelector('.chat-loading');
+
+  if (data.answer) {
+    const sourceLabel = SOURCE_LABELS[data.answer_source];
+    const answerEl = document.createElement('div');
+    answerEl.className = 'query-answer';
+    answerEl.innerHTML = `
+      <span class="answer-label">Answer${sourceLabel ? ` <span class="answer-source">· ${sourceLabel}</span>` : ''}</span>
+      <div class="answer-text">${escapeHtml(data.answer)}</div>
+      <button class="copy-answer-btn" title="Copy answer">Copy</button>
+    `;
+    answerEl.querySelector('.copy-answer-btn').addEventListener('click', (ev) => {
+      navigator.clipboard.writeText(data.answer).then(() => {
+        ev.target.textContent = 'Copied!';
+        setTimeout(() => { ev.target.textContent = 'Copy'; }, 1500);
+      });
     });
-  });
+    loadingEl.replaceWith(answerEl);
+
+    // Only real (non-chitchat, non-empty) exchanges build conversational memory.
+    if (data.answer_source && data.answer_source !== 'none') {
+      state.chatHistory.push({ role: 'user', content: q });
+      state.chatHistory.push({ role: 'assistant', content: data.answer });
+    }
+  } else {
+    loadingEl.remove();
+  }
+
+  if (data.matches && data.matches.length) {
+    const resultsEl = document.createElement('div');
+    resultsEl.className = 'query-results';
+    resultsEl.innerHTML = data.matches.map(renderResultCard).join('');
+    resultsEl.querySelectorAll('.result-card').forEach((card) => {
+      card.addEventListener('click', () => {
+        const node = state.nodesById.get(card.dataset.id);
+        if (node) locateInGraph(node);
+      });
+    });
+    turn.appendChild(resultsEl);
+  }
+
+  turn.scrollIntoView({ behavior: 'smooth', block: 'end' });
+});
+
+clearChatBtn.addEventListener('click', () => {
+  chatThread.innerHTML = '';
+  state.chatHistory = [];
+  clearChatBtn.hidden = true;
+});
+
+// Ctrl/Cmd+K focuses the Ask input from anywhere in the app.
+document.addEventListener('keydown', (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+    e.preventDefault();
+    switchView('query');
+    queryInput.focus();
+  }
+  if (e.key === 'Escape') closeDetail();
 });
 
 async function loadLlmStatus() {
@@ -409,6 +503,110 @@ function renderLibrary(data) {
     });
   });
 }
+
+/* ---------------- Ingest a new video ---------------- */
+
+const ingestForm = document.getElementById('ingest-form');
+const ingestInput = document.getElementById('ingest-input');
+const ingestButton = ingestForm.querySelector('button');
+const ingestProgress = document.getElementById('ingest-progress');
+const ingestProgressTitle = document.getElementById('ingest-progress-title');
+const ingestLog = document.getElementById('ingest-log');
+let ingestPollTimer = null;
+
+function renderIngestLog(lines) {
+  ingestLog.textContent = (lines || []).join('\n');
+  ingestLog.scrollTop = ingestLog.scrollHeight;
+}
+
+async function pollIngestStatus() {
+  let data;
+  try {
+    const res = await fetch('/api/ingest/status');
+    data = await res.json();
+  } catch {
+    return; // transient network hiccup -- try again next tick
+  }
+
+  ingestProgress.hidden = false;
+  renderIngestLog(data.log);
+
+  if (data.status === 'running') {
+    ingestProgress.className = 'ingest-progress';
+    ingestProgressTitle.textContent = `Processing ${data.url || 'video'}...`;
+    ingestButton.disabled = true;
+  } else if (data.status === 'done') {
+    ingestProgress.className = 'ingest-progress done';
+    ingestProgressTitle.textContent = 'Done! Added to your knowledge base.';
+    ingestButton.disabled = false;
+    stopIngestPolling();
+    await loadGraph();
+    await loadLlmStatus();
+  } else if (data.status === 'error') {
+    ingestProgress.className = 'ingest-progress error';
+    ingestProgressTitle.textContent = `Failed: ${data.error || 'unknown error'}`;
+    ingestButton.disabled = false;
+    stopIngestPolling();
+  }
+}
+
+function startIngestPolling() {
+  if (ingestPollTimer) return;
+  pollIngestStatus();
+  ingestPollTimer = setInterval(pollIngestStatus, 2000);
+}
+
+function stopIngestPolling() {
+  if (ingestPollTimer) {
+    clearInterval(ingestPollTimer);
+    ingestPollTimer = null;
+  }
+}
+
+ingestForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const url = ingestInput.value.trim();
+  if (!url) return;
+
+  ingestButton.disabled = true;
+  try {
+    const res = await fetch('/api/ingest', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url }),
+    });
+    if (res.status === 409) {
+      const data = await res.json();
+      alert(data.detail || 'A video is already being processed.');
+      ingestButton.disabled = false;
+      startIngestPolling(); // catch up on the job already in flight
+      return;
+    }
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      alert(data.detail || 'Could not start ingestion -- check the URL and try again.');
+      ingestButton.disabled = false;
+      return;
+    }
+    ingestInput.value = '';
+    startIngestPolling();
+  } catch {
+    alert('Could not reach the server. Is kgwiki still running?');
+    ingestButton.disabled = false;
+  }
+});
+
+// If a job was already running when this page loaded (e.g. the page was
+// refreshed mid-ingest), resume showing its progress instead of losing it.
+(async function resumeIngestIfRunning() {
+  try {
+    const res = await fetch('/api/ingest/status');
+    const data = await res.json();
+    if (data.status === 'running') startIngestPolling();
+  } catch {
+    /* server not reachable yet at load time -- ignore */
+  }
+})();
 
 /* ---------------- Boot ---------------- */
 

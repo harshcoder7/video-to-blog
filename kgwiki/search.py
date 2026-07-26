@@ -298,7 +298,20 @@ say plainly that the rest isn't in view, rather than guessing or inventing what 
 - Be concise: a few sentences unless the question genuinely needs more."""
 
 
-def generate_rag_answer(query: str, matches: list[dict], overviews: list[tuple[str, str]]) -> str | None:
+_MAX_HISTORY_TURNS = 3  # user+assistant pairs; keeps context within the model's ctx window
+
+
+def generate_rag_answer(
+    query: str,
+    matches: list[dict],
+    overviews: list[tuple[str, str]],
+    history: list[dict] | None = None,
+) -> str | None:
+    """history: prior turns as [{"role": "user"|"assistant", "content": str}, ...],
+    oldest first. Retrieval is redone fresh for the current query every time
+    (so the context always reflects what's actually relevant right now) --
+    history only gives the model conversational memory for things like
+    pronouns and follow-ups ("what about the pricing?")."""
     if not llm_client.is_available():
         return None
 
@@ -311,8 +324,12 @@ def generate_rag_answer(query: str, matches: list[dict], overviews: list[tuple[s
         )
     context = "\n\n".join(context_parts) if context_parts else "(No matching video content found for this question.)"
 
-    user_msg = f"Context:\n\n{context}\n\nQuestion: {query}"
-    return llm_client.chat(_RAG_SYSTEM_PROMPT, user_msg, temperature=0.4, max_tokens=500)
+    messages = [{"role": "system", "content": _RAG_SYSTEM_PROMPT}]
+    if history:
+        messages.extend(history[-_MAX_HISTORY_TURNS * 2 :])
+    messages.append({"role": "user", "content": f"Context:\n\n{context}\n\nQuestion: {query}"})
+
+    return llm_client.chat_messages(messages, temperature=0.4, max_tokens=500)
 
 
 _SYNTH_SYSTEM_PROMPT = """You answer questions about a personal video knowledge base \

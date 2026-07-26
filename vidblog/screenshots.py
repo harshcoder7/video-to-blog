@@ -61,15 +61,28 @@ def _run_extract(video_path: str, vf: str, out_pattern: str) -> list[float]:
 
 def _load_cached_candidates(tmp_dir: str) -> list[Candidate]:
     """Reuse frame candidates already extracted by a previous run (matched by
-    their pts_time sidecar file), skipping the expensive ffmpeg decode pass."""
+    their pts_time sidecar file), skipping the expensive ffmpeg decode pass.
+
+    Only the filename is stored in the sidecar (not a full path) so the cache
+    is portable between machines/OSes sharing the same output/ folder --
+    e.g. a video processed locally on Windows and then re-ingested from the
+    Linux Docker container against the same bind-mounted output/ directory.
+    """
     times_file = os.path.join(tmp_dir, "_times.txt")
     if not os.path.exists(times_file):
         return []
     candidates: list[Candidate] = []
     with open(times_file, "r", encoding="utf-8") as f:
         for line in f:
-            path, _, t = line.strip().partition("\t")
-            if path and t and os.path.exists(path):
+            name, _, t = line.strip().partition("\t")
+            if not name or not t:
+                continue
+            # Sidecar files written before this fix stored a full (possibly
+            # foreign-OS) path; fall back to just its basename so old caches
+            # still hit instead of silently re-extracting once per format.
+            name = re.split(r"[\\/]", name)[-1]
+            path = os.path.join(tmp_dir, name)
+            if os.path.exists(path):
                 candidates.append(Candidate(path=path, time=float(t)))
     return candidates
 
@@ -77,7 +90,7 @@ def _load_cached_candidates(tmp_dir: str) -> list[Candidate]:
 def _save_candidate_times(tmp_dir: str, candidates: list[Candidate]) -> None:
     with open(os.path.join(tmp_dir, "_times.txt"), "w", encoding="utf-8") as f:
         for c in candidates:
-            f.write(f"{c.path}\t{c.time}\n")
+            f.write(f"{os.path.basename(c.path)}\t{c.time}\n")
 
 
 def _extract_candidates(video_path: str, tmp_dir: str, grid_interval: float = 6.0) -> list[Candidate]:

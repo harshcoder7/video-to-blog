@@ -15,5 +15,21 @@ services:
               capabilities: [gpu]
     restart: unless-stopped
 
+  kgwiki:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: kgwiki-app
+    ports:
+      - "8765:8765"
+    volumes:
+      - ./output:/app/output
+    environment:
+      OLLAMA_URL: http://ollama:11434
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    depends_on:
+      - ollama
+    restart: unless-stopped
+
 volumes:
   ollama_data:

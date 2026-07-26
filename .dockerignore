@@ -1,0 +1,9 @@
+.git
+.gitignore
+venv
+output
+__pycache__
+*.pyc
+.env
+.claude
+*.md

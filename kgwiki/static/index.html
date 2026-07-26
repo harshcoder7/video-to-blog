@@ -47,6 +47,7 @@
           <span class="legend-item"><i class="dot dot-section"></i>Section</span>
           <span class="legend-item"><i class="dot dot-entity"></i>Topic</span>
         </div>
+        <input id="graph-search" class="graph-search" type="text" placeholder="Filter nodes..." autocomplete="off" />
         <div class="graph-hint">scroll to zoom · drag to pan · drag a node to move it</div>
       </div>
       <div id="graph-container"></div>
@@ -54,11 +55,16 @@
 
     <section id="view-query" class="view">
       <div class="query-wrap">
-        <h1 class="query-title">Ask your video knowledge base</h1>
-        <p class="query-sub">Search across every transcript you've ingested. Answers come with the source clip's screenshot and timestamp.</p>
+        <div class="query-head-row">
+          <div>
+            <h1 class="query-title">Ask your video knowledge base</h1>
+            <p class="query-sub">Search across every transcript you've ingested, conversationally -- follow-up questions work.</p>
+          </div>
+          <button id="clear-chat-btn" class="clear-chat-btn" title="Start a new conversation" hidden>Clear chat</button>
+        </div>
         <div id="llm-status" class="llm-status"></div>
         <form id="query-form" class="query-box">
-          <input id="query-input" type="text" placeholder="e.g. how much can a forward deployed engineer earn?" autocomplete="off" />
+          <input id="query-input" type="text" placeholder="e.g. how much can a forward deployed engineer earn? (Ctrl+K to focus)" autocomplete="off" />
           <button type="submit">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <circle cx="10.5" cy="10.5" r="6.5"/><line x1="19.5" y1="19.5" x2="15.2" y2="15.2"/>
@@ -66,8 +72,7 @@
             Ask
           </button>
         </form>
-        <div id="query-answer" class="query-answer" hidden></div>
-        <div id="query-results" class="query-results"></div>
+        <div id="chat-thread" class="chat-thread"></div>
       </div>
     </section>
 
@@ -75,6 +80,24 @@
       <div class="library-wrap">
         <h1 class="query-title">Library</h1>
         <p class="query-sub">Every video that's been turned into knowledge so far.</p>
+
+        <form id="ingest-form" class="ingest-box">
+          <input id="ingest-input" type="text" placeholder="Paste a YouTube URL to add it to your knowledge base..." autocomplete="off" />
+          <button type="submit">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+            </svg>
+            Add video
+          </button>
+        </form>
+        <div id="ingest-progress" class="ingest-progress" hidden>
+          <div class="ingest-progress-head">
+            <span class="ingest-spinner"></span>
+            <span id="ingest-progress-title">Processing...</span>
+          </div>
+          <pre id="ingest-log" class="ingest-log"></pre>
+        </div>
+
         <div id="library-list" class="library-list"></div>
       </div>
     </section>
