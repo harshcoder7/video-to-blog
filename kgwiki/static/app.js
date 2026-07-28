@@ -512,11 +512,53 @@ const ingestButton = ingestForm.querySelector('button');
 const ingestProgress = document.getElementById('ingest-progress');
 const ingestProgressTitle = document.getElementById('ingest-progress-title');
 const ingestLog = document.getElementById('ingest-log');
+const ingestStagesEl = document.getElementById('ingest-stages');
+const dropzone = document.getElementById('dropzone');
+const fileInput = document.getElementById('file-input');
+const uploadProgressWrap = document.getElementById('upload-progress-wrap');
+const uploadProgressBar = document.getElementById('upload-progress-bar');
+const uploadProgressPct = document.getElementById('upload-progress-pct');
 let ingestPollTimer = null;
+
+const STAGE_ICONS = [
+  { label: 'Load', svg: '<path d="M4 6.5A2.5 2.5 0 0 1 6.5 4h9A2.5 2.5 0 0 1 18 6.5v11a2.5 2.5 0 0 1-2.5 2.5h-9A2.5 2.5 0 0 1 4 17.5v-11Z"/><path d="m18 9.5 4-2.3v9.6l-4-2.3"/>' },
+  { label: 'Transcribe', svg: '<path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3Z"/><path d="M6 11a6 6 0 0 0 12 0"/><path d="M12 17v3"/>' },
+  { label: 'Segment', svg: '<path d="M4 6h16"/><path d="M4 12h10"/><path d="M4 18h16"/>' },
+  { label: 'Screenshots', svg: '<path d="M4 8.5A1.5 1.5 0 0 1 5.5 7h2l1-2h7l1 2h2A1.5 1.5 0 0 1 20 8.5v9A1.5 1.5 0 0 1 18.5 19h-13A1.5 1.5 0 0 1 4 17.5v-9Z"/><circle cx="12" cy="13" r="3.2"/>' },
+  { label: 'Write', svg: '<path d="M4 19.5 4.8 16l10-10 3.2 3.2-10 10L4 19.5Z"/><path d="m13.5 6.9 3.2 3.2"/>' },
+  { label: 'Render', svg: '<path d="m12 3 1.6 4.8L18 9l-4.4 1.6L12 15l-1.6-4.4L6 9l4.4-1.2L12 3Z"/><path d="M18.5 15.5 19.3 18l2.2.8-2.2.7-.8 2.2-.8-2.2-2.2-.7 2.2-.8.8-2.5Z"/>' },
+];
+
+function renderStagesShell() {
+  ingestStagesEl.innerHTML = STAGE_ICONS.map((s, i) => `
+    <div class="ingest-stage" data-stage="${i + 1}">
+      <div class="ingest-stage-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">${s.svg}</svg>
+      </div>
+      <span>${s.label}</span>
+    </div>
+  `).join('');
+}
+renderStagesShell();
+
+function renderStages(stage) {
+  const current = stage ? stage.current : 0;
+  ingestStagesEl.querySelectorAll('.ingest-stage').forEach((el) => {
+    const n = parseInt(el.dataset.stage, 10);
+    el.classList.toggle('done', n < current);
+    el.classList.toggle('active', n === current);
+  });
+}
 
 function renderIngestLog(lines) {
   ingestLog.textContent = (lines || []).join('\n');
   ingestLog.scrollTop = ingestLog.scrollHeight;
+}
+
+function setUploadProgress(pct) {
+  uploadProgressWrap.hidden = false;
+  uploadProgressBar.style.width = `${pct}%`;
+  uploadProgressPct.textContent = `${Math.round(pct)}%`;
 }
 
 async function pollIngestStatus() {
@@ -530,12 +572,20 @@ async function pollIngestStatus() {
 
   ingestProgress.hidden = false;
   renderIngestLog(data.log);
+  renderStages(data.stage);
 
-  if (data.status === 'running') {
+  if (data.status === 'uploading') {
+    ingestProgress.className = 'ingest-progress';
+    ingestProgressTitle.textContent = `Uploading ${data.url || 'video'}...`;
+    ingestButton.disabled = true;
+  } else if (data.status === 'running') {
+    uploadProgressWrap.hidden = true;
     ingestProgress.className = 'ingest-progress';
     ingestProgressTitle.textContent = `Processing ${data.url || 'video'}...`;
     ingestButton.disabled = true;
   } else if (data.status === 'done') {
+    uploadProgressWrap.hidden = true;
+    renderStages({ current: 7 }); // mark all six done
     ingestProgress.className = 'ingest-progress done';
     ingestProgressTitle.textContent = 'Done! Added to your knowledge base.';
     ingestButton.disabled = false;
@@ -543,6 +593,7 @@ async function pollIngestStatus() {
     await loadGraph();
     await loadLlmStatus();
   } else if (data.status === 'error') {
+    uploadProgressWrap.hidden = true;
     ingestProgress.className = 'ingest-progress error';
     ingestProgressTitle.textContent = `Failed: ${data.error || 'unknown error'}`;
     ingestButton.disabled = false;
@@ -596,13 +647,79 @@ ingestForm.addEventListener('submit', async (e) => {
   }
 });
 
+/* ---- Upload dropzone ---- */
+
+function uploadFile(file) {
+  ingestProgress.hidden = false;
+  ingestProgress.className = 'ingest-progress';
+  ingestProgressTitle.textContent = `Uploading ${file.name}...`;
+  renderStages(null);
+  renderIngestLog([`Uploading ${file.name}...`]);
+  setUploadProgress(0);
+
+  const formData = new FormData();
+  formData.append('file', file);
+
+  const xhr = new XMLHttpRequest();
+  xhr.open('POST', '/api/ingest/upload');
+
+  xhr.upload.addEventListener('progress', (e) => {
+    if (e.lengthComputable) setUploadProgress((e.loaded / e.total) * 100);
+  });
+
+  xhr.addEventListener('load', () => {
+    if (xhr.status === 200) {
+      setUploadProgress(100);
+      startIngestPolling();
+    } else if (xhr.status === 409) {
+      alert('A video is already being processed -- check back once it finishes.');
+      startIngestPolling();
+    } else {
+      let detail = 'Upload failed.';
+      try { detail = JSON.parse(xhr.responseText).detail || detail; } catch { /* ignore */ }
+      ingestProgress.className = 'ingest-progress error';
+      ingestProgressTitle.textContent = `Failed: ${detail}`;
+    }
+  });
+
+  xhr.addEventListener('error', () => {
+    ingestProgress.className = 'ingest-progress error';
+    ingestProgressTitle.textContent = 'Upload failed -- could not reach the server.';
+  });
+
+  xhr.send(formData);
+}
+
+dropzone.addEventListener('click', () => fileInput.click());
+fileInput.addEventListener('change', () => {
+  if (fileInput.files[0]) uploadFile(fileInput.files[0]);
+  fileInput.value = '';
+});
+
+['dragenter', 'dragover'].forEach((evt) => {
+  dropzone.addEventListener(evt, (e) => {
+    e.preventDefault();
+    dropzone.classList.add('dragover');
+  });
+});
+['dragleave', 'drop'].forEach((evt) => {
+  dropzone.addEventListener(evt, (e) => {
+    e.preventDefault();
+    dropzone.classList.remove('dragover');
+  });
+});
+dropzone.addEventListener('drop', (e) => {
+  const file = e.dataTransfer.files[0];
+  if (file) uploadFile(file);
+});
+
 // If a job was already running when this page loaded (e.g. the page was
 // refreshed mid-ingest), resume showing its progress instead of losing it.
 (async function resumeIngestIfRunning() {
   try {
     const res = await fetch('/api/ingest/status');
     const data = await res.json();
-    if (data.status === 'running') startIngestPolling();
+    if (data.status === 'running' || data.status === 'uploading') startIngestPolling();
   } catch {
     /* server not reachable yet at load time -- ignore */
   }

@@ -16,7 +16,7 @@ import webbrowser
 from threading import Timer
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -159,6 +159,13 @@ def _run_ingest_job(url: str) -> None:
             _load()  # pick up the new video immediately, no manual refresh needed
         except Exception:
             pass  # don't let a graph-rebuild hiccup mask the ingest result
+        if os.path.abspath(url).startswith(os.path.abspath(UPLOAD_DIR) + os.sep):
+            # vidblog already hardlinked/copied this into output/<video_id>/video.mp4 --
+            # the staging copy in _uploads/ is no longer needed.
+            try:
+                os.remove(url)
+            except OSError:
+                pass
         _ingest_lock.release()
 
 
@@ -187,6 +194,66 @@ def start_ingest(req: IngestRequest):
     return {"job_id": _ingest_state["job_id"], "status": "running"}
 
 
+_ALLOWED_UPLOAD_EXTS = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v"}
+UPLOAD_DIR = os.path.join(OUT_ROOT, "_uploads")
+
+
+@app.post("/api/ingest/upload")
+async def upload_and_ingest(file: UploadFile = File(...)):
+    ext = os.path.splitext(file.filename or "")[1].lower()
+    if ext not in _ALLOWED_UPLOAD_EXTS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file type '{ext}'. Try one of: {', '.join(sorted(_ALLOWED_UPLOAD_EXTS))}",
+        )
+    if not _ingest_lock.acquire(blocking=False):
+        raise HTTPException(
+            status_code=409, detail="A video is already being processed -- check /api/ingest/status."
+        )
+
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
+    safe_name = f"{uuid.uuid4().hex[:8]}_{os.path.basename(file.filename)}"
+    dest_path = os.path.join(UPLOAD_DIR, safe_name)
+
+    _ingest_state.update(
+        {
+            "status": "uploading",
+            "job_id": str(uuid.uuid4()),
+            "url": file.filename,
+            "log": [f"Receiving upload: {file.filename}..."],
+            "error": None,
+            "started_at": time.time(),
+            "finished_at": None,
+        }
+    )
+
+    try:
+        with open(dest_path, "wb") as out:
+            while chunk := await file.read(1024 * 1024):
+                out.write(chunk)
+    except Exception as exc:
+        _ingest_state["status"] = "error"
+        _ingest_state["error"] = f"Upload failed: {exc}"
+        _ingest_lock.release()
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    _ingest_state["log"].append("Upload complete -- starting ingestion (this will take a while for a long recording)...")
+    _ingest_state["status"] = "running"
+    threading.Thread(target=_run_ingest_job, args=(dest_path,), daemon=True).start()
+    return {"job_id": _ingest_state["job_id"], "status": "running"}
+
+
+_STAGE_RE = re.compile(r"^\[(\d+)/(\d+)\]\s*(.*)")
+
+
+def _current_stage(log: list[str]) -> dict | None:
+    for line in reversed(log):
+        m = _STAGE_RE.match(line.strip())
+        if m:
+            return {"current": int(m.group(1)), "total": int(m.group(2)), "label": m.group(3)}
+    return None
+
+
 @app.get("/api/ingest/status")
 def ingest_status():
     return {
@@ -195,6 +262,7 @@ def ingest_status():
         "url": _ingest_state["url"],
         "log": _ingest_state["log"][-300:],
         "error": _ingest_state["error"],
+        "stage": _current_stage(_ingest_state["log"]),
     }
 
 

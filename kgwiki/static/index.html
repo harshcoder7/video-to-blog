@@ -81,6 +81,20 @@
         <h1 class="query-title">Library</h1>
         <p class="query-sub">Every video that's been turned into knowledge so far.</p>
 
+        <div id="dropzone" class="dropzone">
+          <input id="file-input" type="file" accept=".mp4,.mov,.mkv,.avi,.webm,.m4v" hidden />
+          <svg class="dropzone-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 15V4"/><path d="m7.5 8.5 4.5-4.5 4.5 4.5"/>
+            <path d="M4.5 15.5v3a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2v-3"/>
+          </svg>
+          <div class="dropzone-text">
+            <strong>Drop a recording here</strong> or click to browse
+            <span class="dropzone-sub">Screen-shares, meeting recordings, walkthroughs -- .mp4, .mov, .mkv, .avi, .webm</span>
+          </div>
+        </div>
+
+        <div class="ingest-divider"><span>or</span></div>
+
         <form id="ingest-form" class="ingest-box">
           <input id="ingest-input" type="text" placeholder="Paste a YouTube URL to add it to your knowledge base..." autocomplete="off" />
           <button type="submit">
@@ -90,12 +104,24 @@
             Add video
           </button>
         </form>
+
         <div id="ingest-progress" class="ingest-progress" hidden>
           <div class="ingest-progress-head">
             <span class="ingest-spinner"></span>
             <span id="ingest-progress-title">Processing...</span>
           </div>
-          <pre id="ingest-log" class="ingest-log"></pre>
+
+          <div id="upload-progress-wrap" class="upload-progress-wrap" hidden>
+            <div class="upload-progress-track"><div id="upload-progress-bar" class="upload-progress-bar"></div></div>
+            <span id="upload-progress-pct" class="upload-progress-pct">0%</span>
+          </div>
+
+          <div id="ingest-stages" class="ingest-stages"></div>
+
+          <details class="ingest-log-details">
+            <summary>Show full log</summary>
+            <pre id="ingest-log" class="ingest-log"></pre>
+          </details>
         </div>
 
         <div id="library-list" class="library-list"></div>

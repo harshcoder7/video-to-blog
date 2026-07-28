@@ -18,8 +18,9 @@ docker exec kgwiki-ollama ollama pull qwen2.5:3b
 docker exec kgwiki-ollama ollama pull nomic-embed-text
 ```
 
-Open **http://localhost:8765** — paste a YouTube URL right into the Library
-view to ingest your first video (no CLI needed). Everything runs in two
+Open **http://localhost:8765** — drop a local recording or paste a YouTube
+URL right into the Library view to ingest your first video (no CLI needed).
+Everything runs in two
 containers: `kgwiki-app` (the web app + ingestion pipeline) and
 `kgwiki-ollama` (the local LLM), talking to each other over Docker's internal
 network. Both restart automatically with Docker Desktop.
@@ -40,9 +41,14 @@ Sidebar has three views:
   timestamp) it drew from. Follow-up questions work ("how much does it
   pay?" after "what is FDE?" correctly resolves "it"). Ctrl/Cmd+K focuses
   the input from anywhere; every answer has a copy button.
-- **Library** — paste a YouTube URL to ingest a new video directly from the
-  UI, with a live progress log. Also lists every video already ingested,
-  each expandable into its ordered section list.
+- **Library** — drag-and-drop (or click to browse) a local recording, or
+  paste a YouTube URL, to ingest a new video directly from the UI. Shows an
+  upload progress bar for large files, then a live animated stage stepper
+  (Load → Transcribe → Segment → Screenshots → Write → Render) so you can
+  see exactly what's happening instead of a blank wait -- with the full raw
+  log available if you want it. Local uploads automatically get audit mode
+  (see below). Also lists every video already ingested, each expandable
+  into its ordered section list.
 
 ### Answer quality, in priority order (all free)
 
