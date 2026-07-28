@@ -9,7 +9,9 @@ strips that noise and reconstructs a single deduplicated timeline of
 from __future__ import annotations
 
 import difflib
+import hashlib
 import html
+import json
 import os
 import re
 import sys
@@ -126,6 +128,47 @@ def _setup_cuda_dll_dirs() -> None:
                 os.environ["PATH"] = candidate + os.pathsep + os.environ.get("PATH", "")
 
 
+def _transcript_cache_path(video_path: str) -> str:
+    return os.path.join(os.path.dirname(video_path), "_transcript_cache.json")
+
+
+def _transcript_cache_key(video_path: str, model_size: str) -> str:
+    # Size + mtime (not a full content hash) -- cheap to compute even on a
+    # 500MB+ file, and sufficient for a single-user local cache: it only
+    # needs to invalidate when the file actually changes on disk.
+    stat = os.stat(video_path)
+    raw = f"{stat.st_size}:{int(stat.st_mtime)}:{model_size}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _load_cached_transcript(video_path: str, model_size: str) -> list[WordEvent] | None:
+    cache_path = _transcript_cache_path(video_path)
+    if not os.path.exists(cache_path):
+        return None
+    try:
+        with open(cache_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return None
+    if data.get("key") != _transcript_cache_key(video_path, model_size):
+        return None
+    return [WordEvent(word=w["word"], time=w["time"]) for w in data.get("events", [])]
+
+
+def _save_transcript_cache(video_path: str, model_size: str, events: list[WordEvent]) -> None:
+    try:
+        with open(_transcript_cache_path(video_path), "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "key": _transcript_cache_key(video_path, model_size),
+                    "events": [{"word": e.word, "time": e.time} for e in events],
+                },
+                f,
+            )
+    except OSError:
+        pass  # caching is a pure speedup -- never let it break a real transcription result
+
+
 def transcribe_with_whisper(audio_or_video_path: str, model_size: str = "small") -> list[WordEvent]:
     """Fallback transcription when the video has no captions at all (always
     used for local video files, which never have platform captions).
@@ -135,7 +178,17 @@ def transcribe_with_whisper(audio_or_video_path: str, model_size: str = "small")
         pip install faster-whisper
     Tries GPU first (much faster on long recordings), falls back to CPU
     automatically if no compatible GPU/CUDA runtime is available.
+
+    Whisper transcription is by far the most expensive step for a long local
+    recording (~7.5 min GPU / much longer on CPU for an 80-minute video), so
+    the result is cached next to the video keyed by (file size, mtime,
+    model) -- reruns (e.g. after tuning --section-seconds, or resuming after
+    an interrupted pipeline run) skip it entirely instead of repeating it.
     """
+    cached = _load_cached_transcript(audio_or_video_path, model_size)
+    if cached is not None:
+        return cached
+
     try:
         from faster_whisper import WhisperModel
     except ImportError as exc:  # pragma: no cover - environment dependent
@@ -166,4 +219,6 @@ def transcribe_with_whisper(audio_or_video_path: str, model_size: str = "small")
         per_word = span / len(words)
         for i, w in enumerate(words):
             events.append(WordEvent(word=w, time=seg.start + i * per_word))
+
+    _save_transcript_cache(audio_or_video_path, model_size, events)
     return events

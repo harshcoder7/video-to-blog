@@ -91,19 +91,32 @@ class SearchIndex:
         self.embeddings_ready = False
         if self.sections and llm_client.is_available():
             cache = EmbeddingCache(cache_path)
-            vectors = []
-            ok = True
-            for n, text in zip(self.sections, texts):
+
+            # Cache lookups first (fast, no I/O); embed everything still
+            # missing in a single batched call instead of one HTTP
+            # round-trip per section -- matters most right after ingesting
+            # a new video, where every one of its sections is a cache miss.
+            vectors: list[list[float] | None] = [None] * len(self.sections)
+            missing_idx = []
+            for i, (n, text) in enumerate(zip(self.sections, texts)):
                 vec = cache.get(n.id, llm_client.EMBED_MODEL, text)
-                if vec is None:
-                    vec = llm_client.embed(text)
+                if vec is not None:
+                    vectors[i] = vec
+                else:
+                    missing_idx.append(i)
+
+            ok = True
+            if missing_idx:
+                fresh = llm_client.embed_many([texts[i] for i in missing_idx])
+                for i, vec in zip(missing_idx, fresh):
                     if vec is None:
                         ok = False
                         break
-                    cache.set(n.id, llm_client.EMBED_MODEL, text, vec)
-                vectors.append(vec)
+                    vectors[i] = vec
+                    cache.set(self.sections[i].id, llm_client.EMBED_MODEL, texts[i], vec)
+
             cache.save()
-            if ok and vectors:
+            if ok and vectors and all(v is not None for v in vectors):
                 self.embeddings = np.array(vectors, dtype=np.float32)
                 self.embeddings_ready = True
 

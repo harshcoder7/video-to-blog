@@ -94,25 +94,34 @@ def _save_candidate_times(tmp_dir: str, candidates: list[Candidate]) -> None:
 
 
 def _extract_candidates(video_path: str, tmp_dir: str, grid_interval: float = 6.0) -> list[Candidate]:
+    """Extract candidate frames in a single ffmpeg decode pass.
+
+    Previously this ran two full ffmpeg passes over the video -- one for
+    scene-change detection, one for fixed-interval grid sampling -- decoding
+    the entire video twice. ffmpeg's select filter exposes prev_selected_t
+    (the timestamp of the last selected frame, NaN before the first), which
+    lets both conditions be expressed as a single select expression: pick a
+    frame if the scene score is high, OR if it's the first frame, OR if at
+    least `grid_interval` seconds have passed since the last pick. Same
+    coverage guarantee as before, one decode instead of two, and no more
+    near-duplicate candidates from both methods firing close together.
+    """
     os.makedirs(tmp_dir, exist_ok=True)
 
     cached = _load_cached_candidates(tmp_dir)
     if cached:
         return cached
 
+    pattern = os.path.join(tmp_dir, "frame_%05d.jpg")
+    vf = (
+        f"select='gt(scene,0.12)+isnan(prev_selected_t)+gte(t-prev_selected_t,{grid_interval})',"
+        "showinfo"
+    )
+    times = _run_extract(video_path, vf, pattern)
+
     candidates: list[Candidate] = []
-
-    scene_pattern = os.path.join(tmp_dir, "scene_%05d.jpg")
-    scene_times = _run_extract(video_path, "select='gt(scene,0.12)',showinfo", scene_pattern)
-    for i, t in enumerate(scene_times, start=1):
-        p = os.path.join(tmp_dir, f"scene_{i:05d}.jpg")
-        if os.path.exists(p):
-            candidates.append(Candidate(path=p, time=t))
-
-    grid_pattern = os.path.join(tmp_dir, "grid_%05d.jpg")
-    grid_times = _run_extract(video_path, f"fps=1/{grid_interval},showinfo", grid_pattern)
-    for i, t in enumerate(grid_times, start=1):
-        p = os.path.join(tmp_dir, f"grid_{i:05d}.jpg")
+    for i, t in enumerate(times, start=1):
+        p = os.path.join(tmp_dir, f"frame_{i:05d}.jpg")
         if os.path.exists(p):
             candidates.append(Candidate(path=p, time=t))
 
@@ -125,6 +134,19 @@ def _score(path: str) -> float:
     img = cv2.imread(path)
     if img is None:
         return 0.0
+
+    # Scoring only ever *compares* candidates to each other -- it doesn't
+    # need full resolution to do that, and there can be hundreds of these
+    # per video. Downscaling first (~9x fewer pixels at 640px wide for a
+    # 1920px source) cuts the cost of every op below roughly in proportion,
+    # with no meaningful effect on the relative ranking. The original
+    # full-res image is untouched on disk and used as-is for the small
+    # number of frames actually selected as output screenshots.
+    h0, w0 = img.shape[:2]
+    if w0 > 640:
+        scale = 640 / w0
+        img = cv2.resize(img, (640, max(1, int(h0 * scale))), interpolation=cv2.INTER_AREA)
+
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     sharpness = cv2.Laplacian(gray, cv2.CV_64F).var()
     edges = cv2.Canny(gray, 80, 160)

@@ -57,7 +57,38 @@ def embed(text: str) -> list[float] | None:
 
 
 def embed_many(texts: list[str]) -> list[list[float] | None]:
-    return [embed(t) for t in texts]
+    """Embed multiple texts in as few HTTP round-trips as possible.
+
+    Ollama's newer /api/embed endpoint accepts a batch "input" list and
+    returns all embeddings in one call/model-load, instead of one HTTP
+    request per text -- meaningful when ingesting a new video with dozens
+    of sections that all need embedding at once. Falls back to embedding
+    one at a time if the batch endpoint isn't available (older Ollama) or
+    the batch call fails outright, so this never makes things worse.
+    """
+    non_empty = [(i, t) for i, t in enumerate(texts) if t and t.strip()]
+    results: list[list[float] | None] = [None] * len(texts)
+    if not non_empty:
+        return results
+
+    try:
+        resp = requests.post(
+            f"{OLLAMA_URL}/api/embed",
+            json={"model": EMBED_MODEL, "input": [t for _, t in non_empty]},
+            timeout=_TIMEOUT_EMBED * max(1, len(non_empty) // 8),
+        )
+        resp.raise_for_status()
+        embeddings = resp.json().get("embeddings")
+        if embeddings and len(embeddings) == len(non_empty):
+            for (i, _), vec in zip(non_empty, embeddings):
+                results[i] = vec
+            return results
+    except requests.RequestException:
+        pass
+
+    for i, t in non_empty:
+        results[i] = embed(t)
+    return results
 
 
 def chat_messages(messages: list[dict], temperature: float = 0.3, max_tokens: int = 500) -> str | None:
