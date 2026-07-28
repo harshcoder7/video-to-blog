@@ -11,3 +11,4 @@ anthropic
 fastapi
 uvicorn[standard]
 scikit-learn
+faster-whisper

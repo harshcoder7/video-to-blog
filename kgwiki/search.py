@@ -21,7 +21,7 @@ import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
-from kgwiki import llm_client
+import ollama_client as llm_client
 from kgwiki.models import Graph, Node
 
 _CACHE_VERSION = 1

@@ -129,7 +129,18 @@ def _score(path: str) -> float:
     sharpness = cv2.Laplacian(gray, cv2.CV_64F).var()
     edges = cv2.Canny(gray, 80, 160)
     edge_density = edges.mean() / 255.0
-    return sharpness * 0.7 + edge_density * 4000 * 0.3
+    base = sharpness * 0.7 + edge_density * 4000 * 0.3
+
+    # Meeting recordings alternate between an actual screen-share and a
+    # webcam gallery view of participants. Business-software UI is mostly
+    # white/gray/muted (low saturation); webcam video of people has skin
+    # tones and varied backgrounds (meaningfully higher saturation). Penalize
+    # high-saturation frames so a gallery-of-faces frame can't outscore the
+    # real content in the same time window.
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    mean_saturation = float(hsv[:, :, 1].mean())  # 0-255
+    ui_likeness = max(0.0, 1.0 - mean_saturation / 90.0)
+    return base * (0.25 + 0.75 * ui_likeness)
 
 
 def _dedupe(candidates: list[Candidate], window: float = 2.5) -> list[Candidate]:

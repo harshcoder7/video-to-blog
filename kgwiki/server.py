@@ -21,7 +21,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from kgwiki import llm_client
+import ollama_client as llm_client
 from kgwiki.graph_builder import build_graph
 from kgwiki.search import (
     SearchIndex,

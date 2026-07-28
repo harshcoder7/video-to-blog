@@ -4,3 +4,10 @@ __pycache__/
 *.pyc
 .env
 .claude/
+
+# Source video files dropped at the repo root for local ingestion (vidblog
+# copies/hardlinks them into output/, which is already ignored above).
+*.mp4
+*.mov
+*.mkv
+*.avi

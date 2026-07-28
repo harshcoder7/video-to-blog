@@ -91,6 +91,40 @@ CLI options: `--no-llm`, `--max-screenshots N` (default 14), `--section-seconds 
 (default 150), `--whisper-model SIZE` (used only if a video has no captions
 at all, falls back to local transcription).
 
+### Process-audit mode (local recordings, e.g. screen-share walkthroughs)
+
+Point `vidblog` at a local file instead of a URL and it automatically
+switches to **audit mode** -- built for process/system walkthrough
+recordings (Teams/Zoom recordings, screen-shares) where you need a factual,
+step-by-step record of what happened, not a blog post:
+
+```
+venv\Scripts\python -m vidblog "C:\path\to\recording.mp4"
+```
+
+- Transcribes locally with faster-whisper (GPU-accelerated automatically if
+  available -- ~10x realtime on an RTX 3050; falls back to CPU otherwise).
+  No captions needed or expected.
+- Finer-grained sections (90s vs 150s) and more screenshots (50 vs 14) by
+  default, since a thorough audit needs more granularity than a casual blog.
+- Screenshot scoring penalizes high-saturation frames (webcam gallery views)
+  in favor of low-saturation ones (actual screen-shared software UI), so it
+  doesn't pick a frame of people's faces over the system screen being shown.
+- Each step's narration is rewritten by the local LLM (or a rule-based
+  cleanup if Ollama isn't running) into clean, factual, audit-toned prose.
+- Output is a single Markdown document (`audit.md`) with every step's
+  screenshot embedded inline, plus a `blog_override.json` so the same
+  polished text (not raw transcript) shows up in the knowledge graph too.
+
+**On VLM screen-captioning:** we tested using a local vision model
+(moondream, llava-phi3) to automatically describe what's on each screenshot
+-- both confidently hallucinated fabricated details on real dense UI
+screenshots (invented filenames, invented people) rather than reading the
+actual screen. That's unacceptable for an audit trail, so it's off by
+default (`ollama_client.caption_image` still exists if you want to
+experiment with a stronger vision model). Instead, screenshots are embedded
+directly in the doc so a human reviewer can verify on-screen content by eye.
+
 ## Local (non-Docker) setup
 
 ```

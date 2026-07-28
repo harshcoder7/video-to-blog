@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import difflib
 import html
+import os
 import re
+import sys
 from dataclasses import dataclass
 
 import webvtt
@@ -108,12 +110,31 @@ def load_transcript(subtitle_path: str) -> list[WordEvent]:
     return parse_vtt(subtitle_path)
 
 
-def transcribe_with_whisper(audio_or_video_path: str, model_size: str = "small") -> list[WordEvent]:
-    """Fallback transcription when the video has no captions at all.
+def _setup_cuda_dll_dirs() -> None:
+    """On Windows, ctranslate2 (which faster-whisper uses) loads cuBLAS/cuDNN
+    via a plain LoadLibrary call that only searches PATH -- not Python's
+    os.add_dll_directory. If the pip-installed nvidia-cublas-cu12 /
+    nvidia-cudnn-cu12 packages are present, add their DLL folders to PATH so
+    GPU transcription actually works (otherwise it silently only works with
+    device="cpu", ~10x slower)."""
+    if sys.platform != "win32":
+        return
+    for rel in ("nvidia/cublas/bin", "nvidia/cudnn/bin"):
+        for site_dir in sys.path:
+            candidate = os.path.join(site_dir, *rel.split("/"))
+            if os.path.isdir(candidate) and candidate not in os.environ.get("PATH", ""):
+                os.environ["PATH"] = candidate + os.pathsep + os.environ.get("PATH", "")
 
-    Requires the optional ``faster-whisper`` package (CPU-friendly, no torch
-    dependency). Installed lazily since most videos won't need it:
+
+def transcribe_with_whisper(audio_or_video_path: str, model_size: str = "small") -> list[WordEvent]:
+    """Fallback transcription when the video has no captions at all (always
+    used for local video files, which never have platform captions).
+
+    Requires the optional ``faster-whisper`` package. Installed lazily since
+    not every install needs it:
         pip install faster-whisper
+    Tries GPU first (much faster on long recordings), falls back to CPU
+    automatically if no compatible GPU/CUDA runtime is available.
     """
     try:
         from faster_whisper import WhisperModel
@@ -123,8 +144,18 @@ def transcribe_with_whisper(audio_or_video_path: str, model_size: str = "small")
             "installed for local transcription. Run: pip install faster-whisper"
         ) from exc
 
-    model = WhisperModel(model_size, device="cpu", compute_type="int8")
-    segments, _info = model.transcribe(audio_or_video_path, vad_filter=True)
+    _setup_cuda_dll_dirs()
+
+    segments = None
+    try:
+        gpu_model = WhisperModel(model_size, device="cuda", compute_type="int8_float16")
+        segments = list(gpu_model.transcribe(audio_or_video_path, vad_filter=True)[0])
+    except Exception:
+        segments = None
+
+    if segments is None:
+        cpu_model = WhisperModel(model_size, device="cpu", compute_type="int8")
+        segments = list(cpu_model.transcribe(audio_or_video_path, vad_filter=True)[0])
 
     events: list[WordEvent] = []
     for seg in segments:

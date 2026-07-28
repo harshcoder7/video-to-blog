@@ -5,6 +5,7 @@ Ollama isn't running.
 """
 from __future__ import annotations
 
+import base64
 import os
 
 import requests
@@ -12,10 +13,20 @@ import requests
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 CHAT_MODEL = os.environ.get("OLLAMA_CHAT_MODEL", "qwen2.5:3b")
 EMBED_MODEL = os.environ.get("OLLAMA_EMBED_MODEL", "nomic-embed-text")
+VISION_MODEL = os.environ.get("OLLAMA_VISION_MODEL", "moondream")
 
 _TIMEOUT_SHORT = 2.0
 _TIMEOUT_CHAT = 60.0
 _TIMEOUT_EMBED = 20.0
+_TIMEOUT_VISION = 60.0
+
+_DEFAULT_CAPTION_PROMPT = (
+    "This is a screenshot from a screen-recorded walkthrough of a business software "
+    "system. Describe factually what is on screen: name the application/system or "
+    "screen if identifiable, and list the key visible fields, labels, buttons, tabs, "
+    "or data (e.g. names, statuses, numbers) exactly as shown. Do not guess at things "
+    "you cannot actually read. Be concise -- a few sentences."
+)
 
 def is_available() -> bool:
     """Live reachability check (localhost, so this is cheap -- a few ms).
@@ -74,3 +85,26 @@ def chat(system: str, user: str, temperature: float = 0.3, max_tokens: int = 500
         temperature=temperature,
         max_tokens=max_tokens,
     )
+
+
+def caption_image(image_path: str, prompt: str = _DEFAULT_CAPTION_PROMPT) -> str | None:
+    """Ask the local vision model (moondream by default) what's on screen in
+    an image -- used to describe UI/system screenshots that a transcript
+    alone can't capture (e.g. "click here" with no idea what "here" was)."""
+    try:
+        with open(image_path, "rb") as f:
+            b64 = base64.b64encode(f.read()).decode("ascii")
+        resp = requests.post(
+            f"{OLLAMA_URL}/api/chat",
+            json={
+                "model": VISION_MODEL,
+                "messages": [{"role": "user", "content": prompt, "images": [b64]}],
+                "stream": False,
+                "options": {"temperature": 0.2, "num_predict": 300},
+            },
+            timeout=_TIMEOUT_VISION,
+        )
+        resp.raise_for_status()
+        return resp.json().get("message", {}).get("content", "").strip() or None
+    except (requests.RequestException, OSError):
+        return None
