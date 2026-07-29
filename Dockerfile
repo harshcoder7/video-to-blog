@@ -25,6 +25,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY vidblog/ ./vidblog/
 COPY kgwiki/ ./kgwiki/
 COPY ollama_client.py ./ollama_client.py
+COPY docs_pipeline.py ./docs_pipeline.py
+COPY folders.py ./folders.py
 
 ENV KGWIKI_HOST=0.0.0.0 \
     KGWIKI_PORT=8765 \

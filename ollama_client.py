@@ -91,8 +91,15 @@ def embed_many(texts: list[str]) -> list[list[float] | None]:
     return results
 
 
-def chat_messages(messages: list[dict], temperature: float = 0.3, max_tokens: int = 500) -> str | None:
-    """messages: list of {"role": "system"|"user"|"assistant", "content": str}."""
+def chat_messages(
+    messages: list[dict], temperature: float = 0.3, max_tokens: int = 500, timeout: float | None = None
+) -> str | None:
+    """messages: list of {"role": "system"|"user"|"assistant", "content": str}.
+    timeout defaults to _TIMEOUT_CHAT, but batch/background callers (e.g. folder
+    brief generation) should pass a longer one -- the first chat call after the
+    container starts (or after Ollama's idle-unload) pays a one-time model load
+    cost that alone can exceed 60s on a small GPU, and a too-short timeout here
+    silently degrades an accurate answer into "couldn't extract anything"."""
     try:
         resp = requests.post(
             f"{OLLAMA_URL}/api/chat",
@@ -102,7 +109,7 @@ def chat_messages(messages: list[dict], temperature: float = 0.3, max_tokens: in
                 "stream": False,
                 "options": {"temperature": temperature, "num_predict": max_tokens},
             },
-            timeout=_TIMEOUT_CHAT,
+            timeout=timeout if timeout is not None else _TIMEOUT_CHAT,
         )
         resp.raise_for_status()
         return resp.json().get("message", {}).get("content", "").strip() or None
@@ -110,11 +117,14 @@ def chat_messages(messages: list[dict], temperature: float = 0.3, max_tokens: in
         return None
 
 
-def chat(system: str, user: str, temperature: float = 0.3, max_tokens: int = 500) -> str | None:
+def chat(
+    system: str, user: str, temperature: float = 0.3, max_tokens: int = 500, timeout: float | None = None
+) -> str | None:
     return chat_messages(
         [{"role": "system", "content": system}, {"role": "user", "content": user}],
         temperature=temperature,
         max_tokens=max_tokens,
+        timeout=timeout,
     )
 
 

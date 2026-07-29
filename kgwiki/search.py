@@ -120,7 +120,7 @@ class SearchIndex:
                 self.embeddings = np.array(vectors, dtype=np.float32)
                 self.embeddings_ready = True
 
-    def _query_embedding(self, q: str, top_k: int) -> list[dict] | None:
+    def _query_embedding(self, q: str, top_k: int, folder_id: str | None) -> list[dict] | None:
         if not self.embeddings_ready:
             return None
         qvec = llm_client.embed(q)
@@ -130,23 +130,27 @@ class SearchIndex:
         sims = cosine_similarity(qvec, self.embeddings)[0]
         ranked = sims.argsort()[::-1]
         results = []
-        for i in ranked[: top_k * 3]:
+        for i in ranked[: top_k * 6]:
             if sims[i] <= 0.35:
+                continue
+            if folder_id and self.sections[i].data.get("folder_id") != folder_id:
                 continue
             results.append(self._to_result(self.sections[i], float(sims[i])))
             if len(results) >= top_k:
                 break
         return results
 
-    def _query_tfidf(self, q: str, top_k: int) -> list[dict]:
+    def _query_tfidf(self, q: str, top_k: int, folder_id: str | None) -> list[dict]:
         if not self.sections or self.vectorizer is None:
             return []
         qvec = self.vectorizer.transform([q])
         sims = cosine_similarity(qvec, self.matrix)[0]
         ranked = sims.argsort()[::-1]
         results = []
-        for i in ranked[: top_k * 3]:
+        for i in ranked[: top_k * 6]:
             if sims[i] <= 0.02:
+                continue
+            if folder_id and self.sections[i].data.get("folder_id") != folder_id:
                 continue
             results.append(self._to_result(self.sections[i], float(sims[i])))
             if len(results) >= top_k:
@@ -165,14 +169,16 @@ class SearchIndex:
             "start": n.data.get("start"),
             "end": n.data.get("end"),
             "timestamp_url": n.data.get("timestamp_url"),
+            "kind": n.data.get("kind", "video"),
+            "folder_id": n.data.get("folder_id"),
             "score": round(score, 4),
         }
 
-    def query(self, q: str, top_k: int = 6) -> list[dict]:
-        embedding_results = self._query_embedding(q, top_k)
+    def query(self, q: str, top_k: int = 6, folder_id: str | None = None) -> list[dict]:
+        embedding_results = self._query_embedding(q, top_k, folder_id)
         if embedding_results is not None:
             return embedding_results
-        return self._query_tfidf(q, top_k)
+        return self._query_tfidf(q, top_k, folder_id)
 
     def video_overviews(self, video_ids: list[str]) -> list[tuple[str, str]]:
         """(title, overview_text) pairs for the given video ids, for RAG context."""
@@ -183,7 +189,7 @@ class SearchIndex:
                 out.append((node.label, node.data["overview_text"]))
         return out
 
-    def all_video_overviews(self) -> list[tuple[str, str]]:
+    def all_video_overviews(self, folder_id: str | None = None) -> list[tuple[str, str]]:
         """Every ingested video's (title, overview_text), regardless of what
         section-level retrieval found. Always included in RAG context so
         whole-video meta-questions ("what is this about?") work even when
@@ -192,8 +198,19 @@ class SearchIndex:
         return [
             (n.label, n.data["overview_text"])
             for n in self.videos_by_id.values()
-            if n.data.get("overview_text")
+            if n.data.get("overview_text") and (not folder_id or n.data.get("folder_id") == folder_id)
         ]
+
+    def all_sections_for_folder(self, folder_id: str) -> list[dict]:
+        """Every section belonging to a folder, in source+index order --
+        used for brief generation, which needs comprehensive coverage of a
+        folder's content rather than a top-k similarity match against one
+        question."""
+        matches = [
+            self._to_result(n, 1.0) for n in self.sections if n.data.get("folder_id") == folder_id
+        ]
+        matches.sort(key=lambda m: (m["video_id"] or "", m["id"]))
+        return matches
 
 
 _GREETING_RE = re.compile(r"^\s*(hi|hello|hey+|yo|sup|howdy|good\s?(morning|afternoon|evening))\b", re.IGNORECASE)
@@ -291,23 +308,28 @@ def extractive_answer(query: str, results: list[dict], max_sentences: int = 3) -
     return f'{quote}\n\n(from "{top[0][2]}" in {top[0][3]})'
 
 
-_RAG_SYSTEM_PROMPT = """You are a friendly, sharp assistant embedded in someone's personal \
-video knowledge base. You can see excerpts from the videos they've processed (transcript \
-sections and an overview of each video), provided below as context.
+_RAG_SYSTEM_PROMPT = """You are a sharp assistant embedded in a knowledge base built from process \
+walkthrough recordings and process documents (intake forms, architecture checklists, SOPs) -- \
+primarily used for healthcare process-automation work, where the goal is understanding a business \
+process well enough to build AI agents for it. You can see excerpts from the videos/documents \
+that have been processed (transcript or document sections, plus an overview of each source), \
+provided below as context.
 
 Rules:
 - If the context answers the question, answer using it directly and naturally -- don't say \
-"according to the context". Mention the source video by title when it's useful, and feel \
-free to reference timestamps if given.
+"according to the context". Mention the source (video or document title) by name when it's \
+useful, and reference timestamps if given for videos.
+- When relevant, pay attention to and surface: what inputs/data start or feed a process, what \
+named systems or software are involved, and what the concrete steps are -- these are usually \
+exactly what matters for this kind of process-automation work.
 - If the context is only partially relevant, use what's useful and say plainly what isn't covered.
-- If the question has nothing to do with the videos (general knowledge, casual conversation, \
-math, whatever), just answer it normally like a helpful assistant would -- don't force it to \
-be about the videos.
+- If the question has nothing to do with the ingested content (general knowledge, casual \
+conversation, math, whatever), just answer it normally like a helpful assistant would -- don't \
+force it to be about the sources.
 - CRITICAL: never invent structure that isn't explicitly in the context -- no extra steps, \
-weeks, stages, numbers, or names beyond what's written there. If the context only shows some \
-of a sequence (e.g. week 1 and week 2 of a plan but not the rest), summarize only those and \
-say plainly that the rest isn't in view, rather than guessing or inventing what a "week 3" or \
-"week 4" might contain. When unsure whether something is stated in the context, leave it out.
+weeks, stages, systems, or names beyond what's written there. If the context only shows part of \
+a sequence, summarize only that part and say plainly that the rest isn't in view, rather than \
+guessing what's missing. When unsure whether something is stated in the context, leave it out.
 - Be concise: a few sentences unless the question genuinely needs more."""
 
 

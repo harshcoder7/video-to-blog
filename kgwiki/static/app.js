@@ -725,6 +725,383 @@ dropzone.addEventListener('drop', (e) => {
   }
 })();
 
+/* ---------------- Folders view ---------------- */
+
+const foldersHome = document.getElementById('folders-home');
+const folderDetailEl = document.getElementById('folder-detail');
+const foldersGrid = document.getElementById('folders-grid');
+const newFolderForm = document.getElementById('new-folder-form');
+const newFolderInput = document.getElementById('new-folder-input');
+const folderBackBtn = document.getElementById('folder-back-btn');
+const folderDetailTitle = document.getElementById('folder-detail-title');
+const folderSourcesList = document.getElementById('folder-sources-list');
+const folderVideoDropzone = document.getElementById('folder-video-dropzone');
+const folderVideoInput = document.getElementById('folder-video-input');
+const folderDocDropzone = document.getElementById('folder-doc-dropzone');
+const folderDocInput = document.getElementById('folder-doc-input');
+const folderUploadProgress = document.getElementById('folder-upload-progress');
+const folderUploadTitle = document.getElementById('folder-upload-title');
+const folderBriefBtn = document.getElementById('folder-brief-btn');
+const folderBriefEl = document.getElementById('folder-brief-content');
+const folderChatForm = document.getElementById('folder-chat-form');
+const folderChatInput = document.getElementById('folder-chat-input');
+const folderChatThread = document.getElementById('folder-chat-thread');
+
+state.currentFolderId = null;
+state.folderChatHistory = [];
+let folderIngestPollTimer = null;
+
+async function loadFoldersHome() {
+  foldersHome.hidden = false;
+  folderDetailEl.hidden = true;
+  state.currentFolderId = null;
+  let list = [];
+  try {
+    const res = await fetch('/api/folders');
+    list = await res.json();
+  } catch {
+    foldersGrid.innerHTML = '<div class="empty-state">Could not reach the server.</div>';
+    return;
+  }
+  if (!list.length) {
+    foldersGrid.innerHTML = '<div class="empty-state">No folders yet -- create one above to start an audit project.</div>';
+    return;
+  }
+  foldersGrid.innerHTML = list.map((f) => `
+    <div class="folder-card" data-id="${f.id}">
+      <div class="folder-card-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M4 6.5A1.5 1.5 0 0 1 5.5 5h4l1.8 2.2H18.5A1.5 1.5 0 0 1 20 8.7v8.8A1.5 1.5 0 0 1 18.5 19h-13A1.5 1.5 0 0 1 4 17.5v-11Z"/>
+        </svg>
+      </div>
+      <div class="folder-card-name">${escapeHtml(f.name)}</div>
+      <button class="folder-delete-btn" data-id="${f.id}" title="Delete folder">&times;</button>
+    </div>
+  `).join('');
+  foldersGrid.querySelectorAll('.folder-card').forEach((card) => {
+    card.addEventListener('click', (e) => {
+      if (e.target.closest('.folder-delete-btn')) return;
+      openFolderDetail(card.dataset.id);
+    });
+  });
+  foldersGrid.querySelectorAll('.folder-delete-btn').forEach((btn) => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      if (!confirm('Delete this folder? Its videos and documents stay in your library, just ungrouped.')) return;
+      await fetch(`/api/folders/${btn.dataset.id}`, { method: 'DELETE' });
+      loadFoldersHome();
+    });
+  });
+}
+
+newFolderForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const name = newFolderInput.value.trim();
+  if (!name) return;
+  await fetch('/api/folders', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  });
+  newFolderInput.value = '';
+  loadFoldersHome();
+});
+
+function kindBadge(kind) {
+  return kind === 'document'
+    ? '<span class="badge doc-badge">Document</span>'
+    : '<span class="badge">Video</span>';
+}
+
+async function openFolderDetail(folderId) {
+  state.currentFolderId = folderId;
+  state.folderChatHistory = [];
+  folderChatThread.innerHTML = '';
+  folderBriefEl.innerHTML = '';
+  folderUploadProgress.hidden = true;
+  foldersHome.hidden = true;
+  folderDetailEl.hidden = false;
+  await refreshFolderDetail();
+}
+
+async function refreshFolderDetail() {
+  const folderId = state.currentFolderId;
+  if (!folderId) return;
+  const res = await fetch(`/api/folders/${folderId}`);
+  if (!res.ok) { loadFoldersHome(); return; }
+  const folder = await res.json();
+  folderDetailTitle.textContent = folder.name;
+  if (!folder.sources.length) {
+    folderSourcesList.innerHTML = '<div class="empty-state">No videos or documents yet -- drop one in below.</div>';
+  } else {
+    folderSourcesList.innerHTML = folder.sources.map((s) => `
+      <div class="folder-source-row">
+        ${kindBadge(s.kind)}
+        <span class="folder-source-name">${escapeHtml(s.label)}</span>
+        ${s.kind === 'document' ? '' : `<span class="folder-source-meta">${s.section_count || 0} sections</span>`}
+      </div>
+    `).join('');
+  }
+}
+
+folderBackBtn.addEventListener('click', loadFoldersHome);
+
+/* Video upload scoped to a folder -- reuses the same global /api/ingest/upload
+   and /api/ingest/status endpoints as the Library view (ingestion is a single
+   global job either way), just rendered into this folder's own progress bar. */
+function uploadFolderVideo(file) {
+  const folderId = state.currentFolderId;
+  if (!folderId) return;
+  folderUploadProgress.hidden = false;
+  folderUploadProgress.className = 'ingest-progress';
+  folderUploadTitle.textContent = `Uploading ${file.name}...`;
+
+  const formData = new FormData();
+  formData.append('file', file);
+
+  const xhr = new XMLHttpRequest();
+  xhr.open('POST', `/api/ingest/upload?folder_id=${encodeURIComponent(folderId)}`);
+  xhr.upload.addEventListener('progress', (e) => {
+    if (e.lengthComputable) {
+      const pct = Math.round((e.loaded / e.total) * 100);
+      folderUploadTitle.textContent = `Uploading ${file.name}... ${pct}%`;
+    }
+  });
+  xhr.addEventListener('load', () => {
+    if (xhr.status === 200) {
+      folderUploadTitle.textContent = `Processing ${file.name} -- this can take a few minutes for a long recording...`;
+      startFolderIngestPolling();
+    } else if (xhr.status === 409) {
+      folderUploadTitle.textContent = 'A video is already being processed elsewhere -- check back shortly.';
+      startFolderIngestPolling();
+    } else {
+      let detail = 'Upload failed.';
+      try { detail = JSON.parse(xhr.responseText).detail || detail; } catch { /* ignore */ }
+      folderUploadProgress.className = 'ingest-progress error';
+      folderUploadTitle.textContent = `Failed: ${detail}`;
+    }
+  });
+  xhr.addEventListener('error', () => {
+    folderUploadProgress.className = 'ingest-progress error';
+    folderUploadTitle.textContent = 'Upload failed -- could not reach the server.';
+  });
+  xhr.send(formData);
+}
+
+async function pollFolderIngestStatus() {
+  let data;
+  try {
+    const res = await fetch('/api/ingest/status');
+    data = await res.json();
+  } catch {
+    return;
+  }
+  if (data.status === 'running' || data.status === 'uploading') {
+    folderUploadTitle.textContent = `Processing ${data.url || 'video'}...`;
+  } else if (data.status === 'done') {
+    folderUploadProgress.className = 'ingest-progress done';
+    folderUploadTitle.textContent = 'Done! Added to this folder.';
+    stopFolderIngestPolling();
+    await loadGraph();
+    await refreshFolderDetail();
+  } else if (data.status === 'error') {
+    folderUploadProgress.className = 'ingest-progress error';
+    folderUploadTitle.textContent = `Failed: ${data.error || 'unknown error'}`;
+    stopFolderIngestPolling();
+  }
+}
+function startFolderIngestPolling() {
+  if (folderIngestPollTimer) return;
+  pollFolderIngestStatus();
+  folderIngestPollTimer = setInterval(pollFolderIngestStatus, 2000);
+}
+function stopFolderIngestPolling() {
+  if (folderIngestPollTimer) {
+    clearInterval(folderIngestPollTimer);
+    folderIngestPollTimer = null;
+  }
+}
+
+folderVideoDropzone.addEventListener('click', () => folderVideoInput.click());
+folderVideoInput.addEventListener('change', () => {
+  if (folderVideoInput.files[0]) uploadFolderVideo(folderVideoInput.files[0]);
+  folderVideoInput.value = '';
+});
+['dragenter', 'dragover'].forEach((evt) => {
+  folderVideoDropzone.addEventListener(evt, (e) => { e.preventDefault(); folderVideoDropzone.classList.add('dragover'); });
+});
+['dragleave', 'drop'].forEach((evt) => {
+  folderVideoDropzone.addEventListener(evt, (e) => { e.preventDefault(); folderVideoDropzone.classList.remove('dragover'); });
+});
+folderVideoDropzone.addEventListener('drop', (e) => {
+  const file = e.dataTransfer.files[0];
+  if (file) uploadFolderVideo(file);
+});
+
+/* Document upload scoped to a folder -- synchronous on the server (no
+   background job/polling needed), so just await the response directly. */
+function uploadFolderDocument(file) {
+  const folderId = state.currentFolderId;
+  if (!folderId) return;
+  folderUploadProgress.hidden = false;
+  folderUploadProgress.className = 'ingest-progress';
+  folderUploadTitle.textContent = `Uploading ${file.name}...`;
+
+  const formData = new FormData();
+  formData.append('file', file);
+
+  const xhr = new XMLHttpRequest();
+  xhr.open('POST', `/api/documents/upload?folder_id=${encodeURIComponent(folderId)}`);
+  xhr.upload.addEventListener('progress', (e) => {
+    if (e.lengthComputable) {
+      const pct = Math.round((e.loaded / e.total) * 100);
+      folderUploadTitle.textContent = `Uploading ${file.name}... ${pct}%`;
+    }
+  });
+  xhr.addEventListener('load', async () => {
+    if (xhr.status === 200) {
+      folderUploadProgress.className = 'ingest-progress done';
+      folderUploadTitle.textContent = 'Document added.';
+      await loadGraph();
+      await refreshFolderDetail();
+    } else {
+      let detail = 'Upload failed.';
+      try { detail = JSON.parse(xhr.responseText).detail || detail; } catch { /* ignore */ }
+      folderUploadProgress.className = 'ingest-progress error';
+      folderUploadTitle.textContent = `Failed: ${detail}`;
+    }
+  });
+  xhr.addEventListener('error', () => {
+    folderUploadProgress.className = 'ingest-progress error';
+    folderUploadTitle.textContent = 'Upload failed -- could not reach the server.';
+  });
+  xhr.send(formData);
+}
+
+folderDocDropzone.addEventListener('click', () => folderDocInput.click());
+folderDocInput.addEventListener('change', () => {
+  if (folderDocInput.files[0]) uploadFolderDocument(folderDocInput.files[0]);
+  folderDocInput.value = '';
+});
+['dragenter', 'dragover'].forEach((evt) => {
+  folderDocDropzone.addEventListener(evt, (e) => { e.preventDefault(); folderDocDropzone.classList.add('dragover'); });
+});
+['dragleave', 'drop'].forEach((evt) => {
+  folderDocDropzone.addEventListener(evt, (e) => { e.preventDefault(); folderDocDropzone.classList.remove('dragover'); });
+});
+folderDocDropzone.addEventListener('drop', (e) => {
+  const file = e.dataTransfer.files[0];
+  if (file) uploadFolderDocument(file);
+});
+
+/* Structured audit brief: tiny markdown-ish renderer for the ##/-/--- subset
+   kgwiki.briefing actually produces -- no need for a full markdown library. */
+function renderBriefMarkdown(md) {
+  const lines = (md || '').split('\n');
+  let html = '';
+  let inList = false;
+  const closeList = () => { if (inList) { html += '</ul>'; inList = false; } };
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line) { closeList(); continue; }
+    if (line.startsWith('## ')) {
+      closeList();
+      html += `<h3 class="brief-heading">${escapeHtml(line.slice(3))}</h3>`;
+    } else if (line.startsWith('- ') || line.startsWith('* ')) {
+      if (!inList) { html += '<ul class="brief-list">'; inList = true; }
+      html += `<li>${escapeHtml(line.slice(2))}</li>`;
+    } else if (line.startsWith('---')) {
+      closeList();
+      html += '<hr class="brief-hr">';
+    } else {
+      closeList();
+      html += `<p class="brief-p">${escapeHtml(line)}</p>`;
+    }
+  }
+  closeList();
+  return html;
+}
+
+folderBriefBtn.addEventListener('click', async () => {
+  const folderId = state.currentFolderId;
+  if (!folderId) return;
+  folderBriefBtn.disabled = true;
+  folderBriefEl.innerHTML = '<div class="chat-loading"><span class="ingest-spinner"></span> Reading every video and document in this folder... (can take a minute or two the first time, while the local model loads)</div>';
+  try {
+    const res = await fetchWithTimeout(`/api/folders/${folderId}/brief`, { method: 'POST' }, 220000);
+    const data = await res.json();
+    folderBriefEl.innerHTML = renderBriefMarkdown(data.brief);
+  } catch {
+    folderBriefEl.innerHTML = '<div class="empty-state">Could not generate the brief -- try again.</div>';
+  } finally {
+    folderBriefBtn.disabled = false;
+  }
+});
+
+/* Folder-scoped chat -- same /api/query endpoint as the main Ask view, just
+   with folder_id set so retrieval and overviews are filtered to this folder. */
+folderChatForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const q = folderChatInput.value.trim();
+  const folderId = state.currentFolderId;
+  if (!q || !folderId) return;
+  folderChatInput.value = '';
+
+  const turn = document.createElement('div');
+  turn.className = 'chat-turn';
+  turn.innerHTML = `
+    <div class="chat-user-msg">${escapeHtml(q)}</div>
+    <div class="chat-loading"><span class="ingest-spinner"></span> Thinking...</div>
+  `;
+  folderChatThread.appendChild(turn);
+  turn.scrollIntoView({ behavior: 'smooth', block: 'end' });
+
+  let data;
+  try {
+    const res = await fetchWithTimeout(
+      '/api/query',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ q, history: state.folderChatHistory, folder_id: folderId }),
+      },
+      75000,
+    );
+    if (!res.ok) throw new Error(`Server returned ${res.status}`);
+    data = await res.json();
+  } catch (err) {
+    const isAbort = err && err.name === 'AbortError';
+    turn.querySelector('.chat-loading').outerHTML = `<div class="empty-state">${
+      isAbort ? 'That took too long and timed out -- try again.' : "Couldn't reach the server for an answer."
+    }</div>`;
+    return;
+  }
+
+  const loadingEl = turn.querySelector('.chat-loading');
+  if (data.answer) {
+    const sourceLabel = SOURCE_LABELS[data.answer_source];
+    const answerEl = document.createElement('div');
+    answerEl.className = 'query-answer';
+    answerEl.innerHTML = `
+      <span class="answer-label">Answer${sourceLabel ? ` <span class="answer-source">· ${sourceLabel}</span>` : ''}</span>
+      <div class="answer-text">${escapeHtml(data.answer)}</div>
+    `;
+    loadingEl.replaceWith(answerEl);
+    if (data.answer_source && data.answer_source !== 'none') {
+      state.folderChatHistory.push({ role: 'user', content: q });
+      state.folderChatHistory.push({ role: 'assistant', content: data.answer });
+    }
+  } else {
+    loadingEl.remove();
+  }
+  turn.scrollIntoView({ behavior: 'smooth', block: 'end' });
+});
+
+document.querySelector('.nav-icon[data-view="folders"]').addEventListener('click', () => {
+  if (!folderDetailEl.hidden) return; // a folder is already open -- stay on it
+  loadFoldersHome();
+});
+
 /* ---------------- Boot ---------------- */
 
 loadGraph();

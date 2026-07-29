@@ -13,3 +13,5 @@ uvicorn[standard]
 scikit-learn
 faster-whisper
 python-multipart
+pdfplumber
+python-docx

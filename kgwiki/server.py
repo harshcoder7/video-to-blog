@@ -21,7 +21,10 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+import docs_pipeline
+import folders as folders_registry
 import ollama_client as llm_client
+from kgwiki.briefing import generate_folder_brief
 from kgwiki.graph_builder import build_graph
 from kgwiki.search import (
     SearchIndex,
@@ -137,16 +140,19 @@ class _TeeWriter(io.TextIOBase):
 
 class IngestRequest(BaseModel):
     url: str
+    folder_id: str | None = None
 
 
-def _run_ingest_job(url: str) -> None:
+def _run_ingest_job(url: str, folder_id: str | None = None) -> None:
     from vidblog import cli as vidblog_cli
 
     writer = _TeeWriter(_ingest_state["log"])
     try:
         args = vidblog_cli.build_arg_parser().parse_args([url])
         with contextlib.redirect_stdout(writer):
-            vidblog_cli.run(args)
+            out_path = vidblog_cli.run(args)
+        if folder_id:
+            docs_pipeline.set_folder(os.path.dirname(out_path), folder_id)
         _ingest_state["status"] = "done"
     except Exception as exc:  # surface the real error to the UI rather than a bare 500
         _ingest_state["status"] = "error"
@@ -190,7 +196,7 @@ def start_ingest(req: IngestRequest):
             "finished_at": None,
         }
     )
-    threading.Thread(target=_run_ingest_job, args=(url,), daemon=True).start()
+    threading.Thread(target=_run_ingest_job, args=(url, req.folder_id), daemon=True).start()
     return {"job_id": _ingest_state["job_id"], "status": "running"}
 
 
@@ -199,7 +205,7 @@ UPLOAD_DIR = os.path.join(OUT_ROOT, "_uploads")
 
 
 @app.post("/api/ingest/upload")
-async def upload_and_ingest(file: UploadFile = File(...)):
+async def upload_and_ingest(file: UploadFile = File(...), folder_id: str | None = None):
     ext = os.path.splitext(file.filename or "")[1].lower()
     if ext not in _ALLOWED_UPLOAD_EXTS:
         raise HTTPException(
@@ -239,8 +245,39 @@ async def upload_and_ingest(file: UploadFile = File(...)):
 
     _ingest_state["log"].append("Upload complete -- starting ingestion (this will take a while for a long recording)...")
     _ingest_state["status"] = "running"
-    threading.Thread(target=_run_ingest_job, args=(dest_path,), daemon=True).start()
+    threading.Thread(target=_run_ingest_job, args=(dest_path, folder_id), daemon=True).start()
     return {"job_id": _ingest_state["job_id"], "status": "running"}
+
+
+_ALLOWED_DOC_EXTS = {".pdf", ".docx", ".txt", ".md"}
+
+
+@app.post("/api/documents/upload")
+async def upload_document(file: UploadFile = File(...), folder_id: str | None = None):
+    ext = os.path.splitext(file.filename or "")[1].lower()
+    if ext not in _ALLOWED_DOC_EXTS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported document type '{ext}'. Try one of: {', '.join(sorted(_ALLOWED_DOC_EXTS))}",
+        )
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
+    safe_name = f"{uuid.uuid4().hex[:8]}_{os.path.basename(file.filename)}"
+    staging_path = os.path.join(UPLOAD_DIR, safe_name)
+    try:
+        with open(staging_path, "wb") as out:
+            while chunk := await file.read(1024 * 1024):
+                out.write(chunk)
+        title = os.path.splitext(os.path.basename(file.filename))[0]
+        doc_id = docs_pipeline.ingest_document(staging_path, OUT_ROOT, title=title, folder_id=folder_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        try:
+            os.remove(staging_path)
+        except OSError:
+            pass
+    _load()
+    return {"doc_id": doc_id, "status": "done"}
 
 
 _STAGE_RE = re.compile(r"^\[(\d+)/(\d+)\]\s*(.*)")
@@ -276,6 +313,7 @@ class QueryRequest(BaseModel):
     top_k: int = 8
     synthesize: bool = True
     history: list[ChatTurn] = []
+    folder_id: str | None = None
 
 
 @app.get("/api/llm_status")
@@ -296,8 +334,8 @@ def query(req: QueryRequest):
         return {"query": req.q, "answer": chitchat, "matches": [], "answer_source": "chitchat"}
 
     index: SearchIndex = _state["index"]
-    matches = index.query(req.q, top_k=req.top_k)
-    overviews = index.all_video_overviews()
+    matches = index.query(req.q, top_k=req.top_k, folder_id=req.folder_id)
+    overviews = index.all_video_overviews(folder_id=req.folder_id)
 
     history = [{"role": t.role, "content": t.content} for t in req.history]
 
@@ -320,6 +358,53 @@ def query(req: QueryRequest):
         source = "none"
 
     return {"query": req.q, "answer": answer, "matches": matches, "answer_source": source}
+
+
+class CreateFolderRequest(BaseModel):
+    name: str
+
+
+@app.get("/api/folders")
+def api_list_folders():
+    return folders_registry.list_folders(OUT_ROOT)
+
+
+@app.post("/api/folders")
+def api_create_folder(req: CreateFolderRequest):
+    return folders_registry.create_folder(OUT_ROOT, req.name)
+
+
+@app.get("/api/folders/{folder_id}")
+def api_get_folder(folder_id: str):
+    folder = folders_registry.get_folder(OUT_ROOT, folder_id)
+    if not folder:
+        raise HTTPException(status_code=404, detail="Folder not found")
+    graph = _state["graph"]
+    sources = [
+        {"id": n.id, "label": n.label, **n.data}
+        for n in graph.nodes
+        if n.type == "video" and n.data.get("folder_id") == folder_id
+    ]
+    return {**folder, "sources": sources}
+
+
+@app.delete("/api/folders/{folder_id}")
+def api_delete_folder(folder_id: str):
+    ok = folders_registry.delete_folder(OUT_ROOT, folder_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Folder not found")
+    return {"ok": True}
+
+
+@app.post("/api/folders/{folder_id}/brief")
+def api_folder_brief(folder_id: str):
+    folder = folders_registry.get_folder(OUT_ROOT, folder_id)
+    if not folder:
+        raise HTTPException(status_code=404, detail="Folder not found")
+    index: SearchIndex = _state["index"]
+    sources = index.all_sections_for_folder(folder_id)
+    result = generate_folder_brief(folder["name"], sources)
+    return result
 
 
 def main():

@@ -14,6 +14,7 @@ import json
 import os
 import re
 
+import docs_pipeline
 from kgwiki import entities as entity_extractor
 from kgwiki.models import Edge, Graph, Node
 
@@ -71,6 +72,9 @@ def _load_video_folder(work_dir: str, video_id: str) -> dict | None:
         "override_sections": override_sections,
         "subtitle": subtitle,
         "overview_text": overview_text,
+        "kind": sections_data.get("kind", "video"),
+        "source_filename": sections_data.get("source_filename"),
+        "folder_id": docs_pipeline.get_folder(work_dir),
     }
 
 
@@ -103,7 +107,7 @@ def build_graph(out_root: str = "output", top_k_entities: int = 6) -> Graph:
         for raw_sec in info["raw_sections"]:
             idx = raw_sec["index"]
             override_sec = info["override_sections"].get(idx)
-            heading = (override_sec or {}).get("heading") or f"Part {idx + 1}"
+            heading = (override_sec or {}).get("heading") or raw_sec.get("heading") or f"Part {idx + 1}"
             paragraphs = (override_sec or {}).get("paragraphs")
             text = " ".join(paragraphs) if paragraphs else raw_sec.get("raw_transcript", "")
             screenshot_path = os.path.join(work_dir, "screenshots", f"section_{idx:02d}.jpg")
@@ -120,6 +124,8 @@ def build_graph(out_root: str = "output", top_k_entities: int = 6) -> Graph:
                     "start": raw_sec.get("start", "0:00"),
                     "end": raw_sec.get("end", "0:00"),
                     "screenshot": screenshot,
+                    "kind": info["kind"],
+                    "folder_id": info["folder_id"],
                 }
             )
 
@@ -143,6 +149,9 @@ def build_graph(out_root: str = "output", top_k_entities: int = 6) -> Graph:
                     "subtitle": info["subtitle"],
                     "overview_text": info["overview_text"],
                     "section_count": len(info["raw_sections"]),
+                    "kind": info["kind"],
+                    "source_filename": info["source_filename"],
+                    "folder_id": info["folder_id"],
                 },
             )
         )
@@ -173,6 +182,8 @@ def build_graph(out_root: str = "output", top_k_entities: int = 6) -> Graph:
                     "end": sec["end"],
                     "start_seconds": start_seconds,
                     "timestamp_url": timestamp_url,
+                    "kind": sec["kind"],
+                    "folder_id": sec["folder_id"],
                 },
             )
         )

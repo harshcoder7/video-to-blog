@@ -29,6 +29,11 @@
         <path d="M20 4.5c0-.5-.4-.9-1-1h-3.4c-1 0-2 .4-2.6 1.1v14c.6-.6 1.6-1 2.6-1H20V4.5Z"/>
       </svg>
     </button>
+    <button class="nav-icon" data-view="folders" title="Folders">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M4 6.5A1.5 1.5 0 0 1 5.5 5h4l1.8 2.2H18.5A1.5 1.5 0 0 1 20 8.7v8.8A1.5 1.5 0 0 1 18.5 19h-13A1.5 1.5 0 0 1 4 17.5v-11Z"/>
+      </svg>
+    </button>
     <div class="sidebar-spacer"></div>
     <button id="refresh-btn" class="nav-icon" title="Rescan output/ for new videos">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
@@ -125,6 +130,90 @@
         </div>
 
         <div id="library-list" class="library-list"></div>
+      </div>
+    </section>
+
+    <section id="view-folders" class="view">
+      <div class="library-wrap">
+
+        <div id="folders-home">
+          <h1 class="query-title">Folders</h1>
+          <p class="query-sub">Group a process walkthrough recording with its intake forms and checklists into one audit project -- ask questions across all of it at once.</p>
+
+          <form id="new-folder-form" class="ingest-box">
+            <input id="new-folder-input" type="text" placeholder="New folder name, e.g. &quot;Patient Intake — Cardiology&quot;" autocomplete="off" />
+            <button type="submit">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+              </svg>
+              New folder
+            </button>
+          </form>
+
+          <div id="folders-grid" class="folders-grid"></div>
+        </div>
+
+        <div id="folder-detail" hidden>
+          <div class="folder-detail-head">
+            <button id="folder-back-btn" class="folder-back-btn" title="Back to folders">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
+              Folders
+            </button>
+          </div>
+          <h1 id="folder-detail-title" class="query-title">Folder</h1>
+          <p class="query-sub">Drop in the process walkthrough recording and any intake forms or checklists -- everything gets merged for the audit brief and chat below.</p>
+
+          <div class="folder-upload-row">
+            <div id="folder-video-dropzone" class="dropzone folder-dropzone">
+              <input id="folder-video-input" type="file" accept=".mp4,.mov,.mkv,.avi,.webm,.m4v" hidden />
+              <svg class="dropzone-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 15V4"/><path d="m7.5 8.5 4.5-4.5 4.5 4.5"/>
+                <path d="M4.5 15.5v3a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2v-3"/>
+              </svg>
+              <div class="dropzone-text"><strong>Process walkthrough video</strong><span class="dropzone-sub">.mp4, .mov, .mkv, .avi, .webm</span></div>
+            </div>
+            <div id="folder-doc-dropzone" class="dropzone folder-dropzone">
+              <input id="folder-doc-input" type="file" accept=".pdf,.docx,.txt,.md" hidden />
+              <svg class="dropzone-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M7 3.5h7l4 4v13a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1v-16a1 1 0 0 1 1-1Z"/><path d="M14 3.5V8h4"/>
+              </svg>
+              <div class="dropzone-text"><strong>Intake form / checklist</strong><span class="dropzone-sub">.pdf, .docx, .txt, .md</span></div>
+            </div>
+          </div>
+
+          <div id="folder-upload-progress" class="ingest-progress" hidden>
+            <div class="ingest-progress-head">
+              <span class="ingest-spinner"></span>
+              <span id="folder-upload-title">Processing...</span>
+            </div>
+          </div>
+
+          <div class="detail-section-title">Contents</div>
+          <div id="folder-sources-list" class="folder-sources-list"></div>
+
+          <div class="folder-brief-block">
+            <div class="folder-brief-head">
+              <div class="detail-section-title" style="margin:0;">Audit brief</div>
+              <button id="folder-brief-btn" class="clear-chat-btn">Generate brief</button>
+            </div>
+            <div id="folder-brief-content" class="folder-brief-content"></div>
+          </div>
+
+          <div class="folder-chat-block">
+            <div class="detail-section-title">Ask about this folder</div>
+            <form id="folder-chat-form" class="query-box">
+              <input id="folder-chat-input" type="text" placeholder="e.g. what systems does this process touch?" autocomplete="off" />
+              <button type="submit">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <circle cx="10.5" cy="10.5" r="6.5"/><line x1="19.5" y1="19.5" x2="15.2" y2="15.2"/>
+                </svg>
+                Ask
+              </button>
+            </form>
+            <div id="folder-chat-thread" class="chat-thread"></div>
+          </div>
+        </div>
+
       </div>
     </section>
 
