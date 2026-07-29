@@ -58,6 +58,20 @@ if os.path.isdir(OUT_ROOT):
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
+@app.middleware("http")
+async def _no_cache_frontend_assets(request, call_next):
+    """The frontend (index.html/app.js/styles.css) changes constantly during
+    development -- without this, a browser tab left open across a redeploy
+    can silently keep running stale JS while the page itself looks current,
+    which is indistinguishable from an actual bug. /media (screenshots,
+    thumbnails) is unaffected and still cacheable, since those never change
+    once written."""
+    response = await call_next(request)
+    if request.url.path == "/" or request.url.path.startswith("/static/"):
+        response.headers["Cache-Control"] = "no-cache, must-revalidate"
+    return response
+
+
 @app.get("/")
 def index():
     return FileResponse(os.path.join(STATIC_DIR, "index.html"))
